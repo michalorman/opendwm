@@ -138,6 +138,7 @@ static long long status_refresh_at_ms = 0;
 static unsigned int numlockmask = 0;
 static Client *clients = NULL;
 static Client *sel = NULL;
+static Client *tagfocus[10] = { NULL };
 static unsigned int tagset = 1;
 static int layout = LAYOUT_TILE;
 static int showbar = 1;
@@ -223,6 +224,11 @@ static void focus(Client *c) {
   if (!XGetWindowAttributes(dpy, c->win, &wa) || wa.map_state != IsViewable)
     return;
   sel = c;
+  for (unsigned int i = 0; i < LENGTH(tagfocus); i++) {
+    unsigned int mask = 1u << i;
+    if (c->tags & mask)
+      tagfocus[i] = c;
+  }
   XSetInputFocus(dpy, c->win, RevertToPointerRoot, CurrentTime);
   XRaiseWindow(dpy, c->win);
   for (Client *it = clients; it; it = it->next) {
@@ -311,6 +317,10 @@ static void unmanage(Client *c, int destroyed) {
     XUngrabServer(dpy);
   }
   detach(c);
+  for (unsigned int i = 0; i < LENGTH(tagfocus); i++) {
+    if (tagfocus[i] == c)
+      tagfocus[i] = NULL;
+  }
   if (sel == c)
     sel = NULL;
   free(c);
@@ -407,6 +417,18 @@ static void view(const Arg *arg) {
   if ((arg->ui & TAGMASK) == 0)
     return;
   tagset = arg->ui & TAGMASK;
+  if (sel && !isvisible(sel))
+    sel = NULL;
+  if (!sel && (tagset & (tagset - 1)) == 0) {
+    unsigned int tag = 0;
+    while (((1u << tag) & tagset) == 0)
+      tag++;
+    if (tag < LENGTH(tagfocus)) {
+      Client *c = tagfocus[tag];
+      if (c && isvisible(c))
+        sel = c;
+    }
+  }
   arrange();
 }
 
@@ -416,6 +438,18 @@ static void tagandview(const Arg *arg) {
   if (sel)
     sel->tags = arg->ui & TAGMASK;
   tagset = arg->ui & TAGMASK;
+  if (sel && !isvisible(sel))
+    sel = NULL;
+  if (!sel && (tagset & (tagset - 1)) == 0) {
+    unsigned int tag = 0;
+    while (((1u << tag) & tagset) == 0)
+      tag++;
+    if (tag < LENGTH(tagfocus)) {
+      Client *c = tagfocus[tag];
+      if (c && isvisible(c))
+        sel = c;
+    }
+  }
   arrange();
 }
 
