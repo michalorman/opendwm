@@ -95,6 +95,7 @@ static void view(const Arg *arg);
 static void tagandview(const Arg *arg);
 static Client *nexttiled(Client *c);
 static Client *prevtiled(Client *c);
+static void swapclients(Client *a, Client *b);
 static Client *wintoclient(Window w);
 static int xerror(Display *dpy, XErrorEvent *ee);
 
@@ -161,11 +162,62 @@ static void die(const char *msg) {
 }
 
 static void attach(Client *c) {
-  c->next = clients;
-  c->prev = NULL;
-  if (clients)
-    clients->prev = c;
-  clients = c;
+  if (!clients) {
+    c->next = NULL;
+    c->prev = NULL;
+    clients = c;
+    return;
+  }
+  c->next = clients->next;
+  c->prev = clients;
+  if (clients->next)
+    clients->next->prev = c;
+  clients->next = c;
+}
+
+static void swapclients(Client *a, Client *b) {
+  if (!a || !b || a == b)
+    return;
+  Client *ap = a->prev;
+  Client *an = a->next;
+  Client *bp = b->prev;
+  Client *bn = b->next;
+  if (an == b) {
+    a->next = bn;
+    a->prev = b;
+    b->next = a;
+    b->prev = ap;
+    if (bn)
+      bn->prev = a;
+    if (ap)
+      ap->next = b;
+  } else if (bn == a) {
+    b->next = an;
+    b->prev = a;
+    a->next = b;
+    a->prev = bp;
+    if (an)
+      an->prev = b;
+    if (bp)
+      bp->next = a;
+  } else {
+    if (ap)
+      ap->next = b;
+    if (an)
+      an->prev = b;
+    if (bp)
+      bp->next = a;
+    if (bn)
+      bn->prev = a;
+    a->prev = bp;
+    a->next = bn;
+    b->prev = ap;
+    b->next = an;
+  }
+  if (clients == a)
+    clients = b;
+  else if (clients == b)
+    clients = a;
 }
 
 static void detach(Client *c) {
@@ -874,8 +926,7 @@ static void promotemaster(const Arg *arg) {
   (void)arg;
   if (!sel || sel == clients)
     return;
-  detach(sel);
-  attach(sel);
+  swapclients(clients, sel);
   arrange();
 }
 
