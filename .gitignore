@@ -1,0 +1,48 @@
+# Local config
+/config.h
+
+# Build artifacts
+/opendwm
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.out
+*.obj
+*.lo
+*.la
+*.d
+
+# Coverage/profiling
+*.gcno
+*.gcda
+*.gcov
+*.profraw
+*.profdata
+
+# Logs and core dumps
+*.log
+core
+vgcore.*
+
+# Diff/patch rejects
+*.orig
+*.rej
+*.bak
+*~
+
+# Editor/IDE files
+.*.swp
+.*.swo
+.*.swx
+.#*
+*.tmp
+.vscode/
+.idea/
+
+# Tooling outputs
+tags
+cscope.*
+compile_commands.json
