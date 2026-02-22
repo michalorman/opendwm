@@ -49,6 +49,9 @@ struct Client {
 static void arrange(void);
 static void attach(Client *c);
 static void applyrules(Client *c);
+static void apply_layout(void);
+static void bar_cleanup(void);
+static void bar_init(void);
 static void cleanup(void);
 static void configure(Client *c);
 static void configurerequest(XEvent *e);
@@ -57,12 +60,14 @@ static void detach(Client *c);
 static void drawbar(void);
 static void focus(Client *c);
 static void focusstack(const Arg *arg);
+static int is_single_tag(unsigned int mask);
 static void grabkeys(void);
 static void incmfact(const Arg *arg);
 static void incgaps(const Arg *arg);
 static void keypress(XEvent *e);
 static void killclient(const Arg *arg);
 static void manage(Window w, XWindowAttributes *wa);
+static void map_unmap_visible(void);
 static void maprequest(XEvent *e);
 static void monocle(void);
 static void movefocus(Client *c);
@@ -71,9 +76,11 @@ static void promotemaster(const Arg *arg);
 static void quit(const Arg *arg);
 static void resize(Client *c, int x, int y, int w, int h);
 static void run(void);
+static void select_visible_focus(void);
 static void setlayout(const Arg *arg);
 static void setup(void);
 static void spawn(const Arg *arg);
+static int tag_index_from_mask(unsigned int mask);
 static void tile(void);
 static void togglebar(const Arg *arg);
 static void unmanage(Client *c, int destroyed);
@@ -197,6 +204,18 @@ static void applyrules(Client *c) {
 
 static int isvisible(Client *c) {
   return c->tags & tagset;
+}
+
+static int is_single_tag(unsigned int mask) {
+  return mask && !(mask & (mask - 1));
+}
+
+static int tag_index_from_mask(unsigned int mask) {
+  for (unsigned int i = 0; i < LENGTH(tagfocus); i++) {
+    if (mask & (1u << i))
+      return (int)i;
+  }
+  return -1;
 }
 
 static Client *nexttiled(Client *c) {
@@ -324,7 +343,9 @@ static void unmanage(Client *c, int destroyed) {
   if (sel == c)
     sel = NULL;
   free(c);
-  focus(nexttiled(clients));
+  select_visible_focus();
+  if (sel)
+    focus(sel);
   arrange();
 }
 
@@ -417,18 +438,7 @@ static void view(const Arg *arg) {
   if ((arg->ui & TAGMASK) == 0)
     return;
   tagset = arg->ui & TAGMASK;
-  if (sel && !isvisible(sel))
-    sel = NULL;
-  if (!sel && (tagset & (tagset - 1)) == 0) {
-    unsigned int tag = 0;
-    while (((1u << tag) & tagset) == 0)
-      tag++;
-    if (tag < LENGTH(tagfocus)) {
-      Client *c = tagfocus[tag];
-      if (c && isvisible(c))
-        sel = c;
-    }
-  }
+  select_visible_focus();
   arrange();
 }
 
@@ -438,18 +448,7 @@ static void tagandview(const Arg *arg) {
   if (sel)
     sel->tags = arg->ui & TAGMASK;
   tagset = arg->ui & TAGMASK;
-  if (sel && !isvisible(sel))
-    sel = NULL;
-  if (!sel && (tagset & (tagset - 1)) == 0) {
-    unsigned int tag = 0;
-    while (((1u << tag) & tagset) == 0)
-      tag++;
-    if (tag < LENGTH(tagfocus)) {
-      Client *c = tagfocus[tag];
-      if (c && isvisible(c))
-        sel = c;
-    }
-  }
+  select_visible_focus();
   arrange();
 }
 
@@ -525,7 +524,7 @@ static void monocle(void) {
   }
 }
 
-static void arrange(void) {
+static void map_unmap_visible(void) {
   for (Client *c = clients; c; c = c->next) {
     if (isvisible(c))
       XMapWindow(dpy, c->win);
@@ -534,23 +533,40 @@ static void arrange(void) {
       c->ignoreunmap++;
     }
   }
-  if (sel && !isvisible(sel))
-    sel = nexttiled(clients);
+}
+
+static void apply_layout(void) {
   if (layout == LAYOUT_MONOCLE)
     monocle();
   else
     tile();
   if (topbar && showbar)
     XRaiseWindow(dpy, barwin);
+}
+
+static void select_visible_focus(void) {
+  if (sel && !isvisible(sel))
+    sel = NULL;
+  if (!sel && is_single_tag(tagset)) {
+    int tag = tag_index_from_mask(tagset);
+    if (tag >= 0 && tag < (int)LENGTH(tagfocus)) {
+      Client *c = tagfocus[tag];
+      if (c && isvisible(c))
+        sel = c;
+    }
+  }
+  if (!sel)
+    sel = nexttiled(clients);
+}
+
+static void arrange(void) {
+  map_unmap_visible();
+  select_visible_focus();
+  apply_layout();
   if (sel)
     focus(sel);
-  else {
-    Client *c = nexttiled(clients);
-    if (c)
-      focus(c);
-    else
-      XSetInputFocus(dpy, root, RevertToPointerRoot, CurrentTime);
-  }
+  else
+    XSetInputFocus(dpy, root, RevertToPointerRoot, CurrentTime);
   drawbar();
 }
 
@@ -966,30 +982,7 @@ static void setup(void) {
   col_border_norm = xcol.pixel;
 
   showbar = topbar;
-  if (topbar) {
-    XSetWindowAttributes wa;
-    wa.override_redirect = True;
-    wa.background_pixel = col_bg;
-    wa.event_mask = ExposureMask | ButtonPressMask;
-    barwin = XCreateWindow(dpy, root, 0, 0, sw, barheight, 0, DefaultDepth(dpy, screen),
-                           CopyFromParent, DefaultVisual(dpy, screen),
-                           CWOverrideRedirect | CWBackPixel | CWEventMask, &wa);
-    XChangeProperty(dpy, barwin, net_wm_window_type, XA_ATOM, 32, PropModeReplace,
-                    (unsigned char *)&net_wm_window_type_dock, 1);
-    XChangeProperty(dpy, barwin, net_wm_state, XA_ATOM, 32, PropModeReplace,
-                    (unsigned char *)&net_wm_state_above, 1);
-    xftdraw = XftDrawCreate(dpy, barwin, DefaultVisual(dpy, screen), DefaultColormap(dpy, screen));
-    if (!xftdraw)
-      die("failed to create XftDraw");
-    if (!XftColorAllocName(dpy, DefaultVisual(dpy, screen), DefaultColormap(dpy, screen), col_fg_hex, &xftcol_fg))
-      die("failed to allocate xftcol_fg");
-    if (!XftColorAllocName(dpy, DefaultVisual(dpy, screen), DefaultColormap(dpy, screen), col_bg_hex, &xftcol_bg))
-      die("failed to allocate xftcol_bg");
-    if (!XftColorAllocName(dpy, DefaultVisual(dpy, screen), DefaultColormap(dpy, screen), col_accent_hex, &xftcol_accent))
-      die("failed to allocate xftcol_accent");
-    if (showbar)
-      XMapRaised(dpy, barwin);
-  }
+  bar_init();
 
   XSelectInput(dpy, root, SubstructureRedirectMask | SubstructureNotifyMask | ButtonPressMask | PointerMotionMask | EnterWindowMask | LeaveWindowMask | StructureNotifyMask | PropertyChangeMask);
 
@@ -1030,6 +1023,40 @@ static int xerror(Display *dpy, XErrorEvent *ee) {
 }
 
 static void cleanup(void) {
+  bar_cleanup();
+  if (gc)
+    XFreeGC(dpy, gc);
+  XCloseDisplay(dpy);
+}
+
+static void bar_init(void) {
+  if (!topbar)
+    return;
+  XSetWindowAttributes wa;
+  wa.override_redirect = True;
+  wa.background_pixel = col_bg;
+  wa.event_mask = ExposureMask | ButtonPressMask;
+  barwin = XCreateWindow(dpy, root, 0, 0, sw, barheight, 0, DefaultDepth(dpy, screen),
+                         CopyFromParent, DefaultVisual(dpy, screen),
+                         CWOverrideRedirect | CWBackPixel | CWEventMask, &wa);
+  XChangeProperty(dpy, barwin, net_wm_window_type, XA_ATOM, 32, PropModeReplace,
+                  (unsigned char *)&net_wm_window_type_dock, 1);
+  XChangeProperty(dpy, barwin, net_wm_state, XA_ATOM, 32, PropModeReplace,
+                  (unsigned char *)&net_wm_state_above, 1);
+  xftdraw = XftDrawCreate(dpy, barwin, DefaultVisual(dpy, screen), DefaultColormap(dpy, screen));
+  if (!xftdraw)
+    die("failed to create XftDraw");
+  if (!XftColorAllocName(dpy, DefaultVisual(dpy, screen), DefaultColormap(dpy, screen), col_fg_hex, &xftcol_fg))
+    die("failed to allocate xftcol_fg");
+  if (!XftColorAllocName(dpy, DefaultVisual(dpy, screen), DefaultColormap(dpy, screen), col_bg_hex, &xftcol_bg))
+    die("failed to allocate xftcol_bg");
+  if (!XftColorAllocName(dpy, DefaultVisual(dpy, screen), DefaultColormap(dpy, screen), col_accent_hex, &xftcol_accent))
+    die("failed to allocate xftcol_accent");
+  if (showbar)
+    XMapRaised(dpy, barwin);
+}
+
+static void bar_cleanup(void) {
   if (xftdraw) {
     Visual *vis = DefaultVisual(dpy, screen);
     Colormap cmap = DefaultColormap(dpy, screen);
@@ -1045,9 +1072,6 @@ static void cleanup(void) {
   }
   if (topbar)
     XDestroyWindow(dpy, barwin);
-  if (gc)
-    XFreeGC(dpy, gc);
-  XCloseDisplay(dpy);
 }
 
 static void run(void) {
