@@ -42,6 +42,7 @@ struct Client {
   unsigned int tags;
   int ignoreunmap;
   int isfloating;
+  int isfullscreen;
   Client *next;
   Client *prev;
 };
@@ -50,8 +51,10 @@ static void arrange(void);
 static void attach(Client *c);
 static void applyrules(Client *c);
 static void apply_layout(void);
+static void apply_fullscreen(void);
 static void bar_cleanup(void);
 static void bar_init(void);
+static int bar_is_visible(void);
 static void cleanup(void);
 static void configure(Client *c);
 static void configurerequest(XEvent *e);
@@ -60,6 +63,7 @@ static void detach(Client *c);
 static void drawbar(void);
 static void focus(Client *c);
 static void focusstack(const Arg *arg);
+static int has_visible_fullscreen(void);
 static int is_single_tag(unsigned int mask);
 static void grabkeys(void);
 static void incmfact(const Arg *arg);
@@ -78,6 +82,7 @@ static void resize(Client *c, int x, int y, int w, int h);
 static void run(void);
 static void select_visible_focus(void);
 static void setlayout(const Arg *arg);
+static void setfullscreen(Client *c, int fullscreen);
 static void setup(void);
 static void spawn(const Arg *arg);
 static int tag_index_from_mask(unsigned int mask);
@@ -87,6 +92,7 @@ static void unmanage(Client *c, int destroyed);
 static void unmapnotify(XEvent *e);
 static void updatenumlockmask(void);
 static void updateclock(void);
+static void update_bar_visibility(void);
 static int getusedram(char *buf, size_t buflen);
 static int getvolume(char *buf, size_t buflen);
 static int textwidth(const char *text);
@@ -96,6 +102,7 @@ static void tagandview(const Arg *arg);
 static Client *nexttiled(Client *c);
 static Client *prevtiled(Client *c);
 static void swapclients(Client *a, Client *b);
+static int window_has_state(Window w, Atom state);
 static Client *wintoclient(Window w);
 static int xerror(Display *dpy, XErrorEvent *ee);
 
@@ -135,6 +142,7 @@ static Atom net_wm_window_type;
 static Atom net_wm_window_type_dock;
 static Atom net_wm_state;
 static Atom net_wm_state_above;
+static Atom net_wm_state_fullscreen;
 static int tagx[10];
 static int tagw[10];
 static int sw, sh;
@@ -258,6 +266,22 @@ static int isvisible(Client *c) {
   return c->tags & tagset;
 }
 
+static int has_visible_fullscreen(void) {
+  for (Client *c = clients; c; c = c->next) {
+    if (isvisible(c) && c->isfullscreen)
+      return 1;
+  }
+  return 0;
+}
+
+static int bar_is_visible(void) {
+  if (!showbar)
+    return 0;
+  if (has_visible_fullscreen())
+    return 0;
+  return 1;
+}
+
 static int is_single_tag(unsigned int mask) {
   return mask && !(mask & (mask - 1));
 }
@@ -271,13 +295,13 @@ static int tag_index_from_mask(unsigned int mask) {
 }
 
 static Client *nexttiled(Client *c) {
-  for (; c && (!isvisible(c) || c->isfloating); c = c->next) {
+  for (; c && (!isvisible(c) || c->isfloating || c->isfullscreen); c = c->next) {
   }
   return c;
 }
 
 static Client *prevtiled(Client *c) {
-  for (; c && (!isvisible(c) || c->isfloating); c = c->prev) {
+  for (; c && (!isvisible(c) || c->isfloating || c->isfullscreen); c = c->prev) {
   }
   return c;
 }
@@ -305,7 +329,9 @@ static void focus(Client *c) {
   for (Client *it = clients; it; it = it->next) {
     if (!isvisible(it))
       continue;
-    if (layout == LAYOUT_MONOCLE) {
+    if (it->isfullscreen) {
+      XSetWindowBorderWidth(dpy, it->win, 0);
+    } else if (layout == LAYOUT_MONOCLE) {
       XSetWindowBorderWidth(dpy, it->win, 0);
     } else {
       XSetWindowBorderWidth(dpy, it->win, borderpx);
@@ -313,7 +339,7 @@ static void focus(Client *c) {
     }
   }
   drawbar();
-  if (topbar && showbar)
+  if (topbar && bar_is_visible())
     XRaiseWindow(dpy, barwin);
 }
 
@@ -358,8 +384,9 @@ static void manage(Window w, XWindowAttributes *wa) {
   c->h = wa->height;
   c->tags = tagset;
   applyrules(c);
-  if (c->isfloating) {
-    int by = (showbar ? barheight : 0);
+  c->isfullscreen = window_has_state(w, net_wm_state_fullscreen);
+  if (c->isfloating && !c->isfullscreen) {
+    int by = (bar_is_visible() ? barheight : 0);
     int x = (sw - c->w) / 2;
     int y = (sh - by - c->h) / 2 + by;
     if (x < 0)
@@ -372,7 +399,7 @@ static void manage(Window w, XWindowAttributes *wa) {
   }
   attach(c);
   XSelectInput(dpy, w, ButtonPressMask | EnterWindowMask | FocusChangeMask | PropertyChangeMask | StructureNotifyMask);
-  XSetWindowBorderWidth(dpy, w, (layout == LAYOUT_MONOCLE) ? 0 : borderpx);
+  XSetWindowBorderWidth(dpy, w, (layout == LAYOUT_MONOCLE || c->isfullscreen) ? 0 : borderpx);
   XSetWindowBorder(dpy, w, col_border_norm);
   XMapWindow(dpy, w);
   focus(c);
@@ -513,9 +540,9 @@ static void tile(void) {
     return;
 
   int wx = 0;
-  int wy = showbar ? barheight : 0;
+  int wy = bar_is_visible() ? barheight : 0;
   int ww = sw;
-  int wh = sh - (showbar ? barheight : 0);
+  int wh = sh - (bar_is_visible() ? barheight : 0);
 
   int g = gappx;
   wx += g;
@@ -565,11 +592,11 @@ static void tile(void) {
 
 static void monocle(void) {
   int wx = 0;
-  int wy = showbar ? barheight : 0;
+  int wy = bar_is_visible() ? barheight : 0;
   int ww = sw;
-  int wh = sh - (showbar ? barheight : 0);
+  int wh = sh - (bar_is_visible() ? barheight : 0);
   for (Client *c = clients; c; c = c->next) {
-    if (!isvisible(c) || c->isfloating)
+    if (!isvisible(c) || c->isfloating || c->isfullscreen)
       continue;
     XSetWindowBorderWidth(dpy, c->win, 0);
     resize(c, wx, wy, ww, wh);
@@ -592,8 +619,18 @@ static void apply_layout(void) {
     monocle();
   else
     tile();
-  if (topbar && showbar)
+  if (topbar && bar_is_visible())
     XRaiseWindow(dpy, barwin);
+}
+
+static void apply_fullscreen(void) {
+  for (Client *c = clients; c; c = c->next) {
+    if (!isvisible(c) || !c->isfullscreen)
+      continue;
+    XSetWindowBorderWidth(dpy, c->win, 0);
+    resize(c, 0, 0, sw, sh);
+    XRaiseWindow(dpy, c->win);
+  }
 }
 
 static void select_visible_focus(void) {
@@ -615,6 +652,8 @@ static void arrange(void) {
   map_unmap_visible();
   select_visible_focus();
   apply_layout();
+  apply_fullscreen();
+  update_bar_visibility();
   if (sel)
     focus(sel);
   else
@@ -623,7 +662,7 @@ static void arrange(void) {
 }
 
 static void drawbar(void) {
-  if (!topbar || !showbar)
+  if (!topbar || !bar_is_visible())
     return;
   int x = 0;
   XSetForeground(dpy, gc, col_bg);
@@ -1005,6 +1044,7 @@ static void setup(void) {
   net_wm_window_type_dock = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_DOCK", False);
   net_wm_state = XInternAtom(dpy, "_NET_WM_STATE", False);
   net_wm_state_above = XInternAtom(dpy, "_NET_WM_STATE_ABOVE", False);
+  net_wm_state_fullscreen = XInternAtom(dpy, "_NET_WM_STATE_FULLSCREEN", False);
 
   gc = XCreateGC(dpy, root, 0, NULL);
   xftfont = XftFontOpenName(dpy, screen, fontname);
@@ -1053,10 +1093,49 @@ static void togglebar(const Arg *arg) {
   if (!topbar)
     return;
   showbar = !showbar;
-  if (showbar)
+  update_bar_visibility();
+  arrange();
+}
+
+static void update_bar_visibility(void) {
+  if (!topbar)
+    return;
+  if (bar_is_visible())
     XMapRaised(dpy, barwin);
   else
     XUnmapWindow(dpy, barwin);
+}
+
+static int window_has_state(Window w, Atom state) {
+  Atom actual;
+  int format;
+  unsigned long nitems, bytes_after;
+  Atom *props = NULL;
+  int found = 0;
+  if (XGetWindowProperty(dpy, w, net_wm_state, 0, 32, False, XA_ATOM,
+                         &actual, &format, &nitems, &bytes_after,
+                         (unsigned char **)&props) != Success)
+    return 0;
+  if (props) {
+    for (unsigned long i = 0; i < nitems; i++) {
+      if (props[i] == state) {
+        found = 1;
+        break;
+      }
+    }
+    XFree(props);
+  }
+  return found;
+}
+
+static void setfullscreen(Client *c, int fullscreen) {
+  if (!c || c->isfullscreen == fullscreen)
+    return;
+  c->isfullscreen = fullscreen;
+  if (fullscreen) {
+    XSetWindowBorderWidth(dpy, c->win, 0);
+    XRaiseWindow(dpy, c->win);
+  }
   arrange();
 }
 
@@ -1161,7 +1240,38 @@ static void run(void) {
           break;
         }
         case ConfigureRequest: configurerequest(&ev); break;
+        case ClientMessage: {
+          XClientMessageEvent *cm = &ev.xclient;
+          if (cm->message_type == net_wm_state) {
+            Client *c = wintoclient(cm->window);
+            if (c) {
+              Atom a1 = (Atom)cm->data.l[1];
+              Atom a2 = (Atom)cm->data.l[2];
+              if (a1 == net_wm_state_fullscreen || a2 == net_wm_state_fullscreen) {
+                int action = cm->data.l[0];
+                int fs = c->isfullscreen;
+                if (action == 0)
+                  fs = 0;
+                else if (action == 1)
+                  fs = 1;
+                else if (action == 2)
+                  fs = !fs;
+                setfullscreen(c, fs);
+              }
+            }
+          }
+          break;
+        }
         case DestroyNotify: destroynotify(&ev); break;
+        case PropertyNotify: {
+          XPropertyEvent *pev = &ev.xproperty;
+          if (pev->atom == net_wm_state) {
+            Client *c = wintoclient(pev->window);
+            if (c)
+              setfullscreen(c, window_has_state(c->win, net_wm_state_fullscreen));
+          }
+          break;
+        }
         case UnmapNotify: unmapnotify(&ev); break;
         case KeyPress: keypress(&ev); break;
       }
