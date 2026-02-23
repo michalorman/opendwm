@@ -103,6 +103,7 @@ static Client *nexttiled(Client *c);
 static Client *prevtiled(Client *c);
 static void swapclients(Client *a, Client *b);
 static int window_has_state(Window w, Atom state);
+static int window_has_type(Window w, Atom type);
 static Client *wintoclient(Window w);
 static int xerror(Display *dpy, XErrorEvent *ee);
 
@@ -139,9 +140,13 @@ static unsigned long col_border_focus;
 static unsigned long col_border_norm;
 static Atom wmatom;
 static Atom net_wm_window_type;
+static Atom net_wm_window_type_dialog;
+static Atom net_wm_window_type_utility;
+static Atom net_wm_window_type_splash;
 static Atom net_wm_window_type_dock;
 static Atom net_wm_state;
 static Atom net_wm_state_above;
+static Atom net_wm_state_modal;
 static Atom net_wm_state_fullscreen;
 static int tagx[10];
 static int tagw[10];
@@ -385,6 +390,13 @@ static void manage(Window w, XWindowAttributes *wa) {
   c->tags = tagset;
   applyrules(c);
   c->isfullscreen = window_has_state(w, net_wm_state_fullscreen);
+  if (window_has_state(w, net_wm_state_modal)
+      || window_has_state(w, net_wm_state_above)
+      || window_has_type(w, net_wm_window_type_dialog)
+      || window_has_type(w, net_wm_window_type_utility)
+      || window_has_type(w, net_wm_window_type_splash)) {
+    c->isfloating = 1;
+  }
   if (c->isfloating && !c->isfullscreen) {
     int by = (bar_is_visible() ? barheight : 0);
     int x = (sw - c->w) / 2;
@@ -1041,9 +1053,13 @@ static void setup(void) {
   sh = DisplayHeight(dpy, screen);
   wmatom = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
   net_wm_window_type = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE", False);
+  net_wm_window_type_dialog = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_DIALOG", False);
+  net_wm_window_type_utility = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_UTILITY", False);
+  net_wm_window_type_splash = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_SPLASH", False);
   net_wm_window_type_dock = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_DOCK", False);
   net_wm_state = XInternAtom(dpy, "_NET_WM_STATE", False);
   net_wm_state_above = XInternAtom(dpy, "_NET_WM_STATE_ABOVE", False);
+  net_wm_state_modal = XInternAtom(dpy, "_NET_WM_STATE_MODAL", False);
   net_wm_state_fullscreen = XInternAtom(dpy, "_NET_WM_STATE_FULLSCREEN", False);
 
   gc = XCreateGC(dpy, root, 0, NULL);
@@ -1119,6 +1135,28 @@ static int window_has_state(Window w, Atom state) {
   if (props) {
     for (unsigned long i = 0; i < nitems; i++) {
       if (props[i] == state) {
+        found = 1;
+        break;
+      }
+    }
+    XFree(props);
+  }
+  return found;
+}
+
+static int window_has_type(Window w, Atom type) {
+  Atom actual;
+  int format;
+  unsigned long nitems, bytes_after;
+  Atom *props = NULL;
+  int found = 0;
+  if (XGetWindowProperty(dpy, w, net_wm_window_type, 0, 32, False, XA_ATOM,
+                         &actual, &format, &nitems, &bytes_after,
+                         (unsigned char **)&props) != Success)
+    return 0;
+  if (props) {
+    for (unsigned long i = 0; i < nitems; i++) {
+      if (props[i] == type) {
         found = 1;
         break;
       }
