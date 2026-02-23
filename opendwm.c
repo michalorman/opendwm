@@ -1092,6 +1092,8 @@ static void setup(void) {
   bar_init();
 
   XSelectInput(dpy, root, SubstructureRedirectMask | SubstructureNotifyMask | ButtonPressMask | PointerMotionMask | EnterWindowMask | LeaveWindowMask | StructureNotifyMask | PropertyChangeMask);
+  XGrabButton(dpy, AnyButton, AnyModifier, root, True, ButtonPressMask,
+              GrabModeSync, GrabModeAsync, None, None);
 
   Cursor cursor = XCreateFontCursor(dpy, XC_left_ptr);
   XDefineCursor(dpy, root, cursor);
@@ -1271,10 +1273,12 @@ static void run(void) {
               }
             }
           } else {
-            Client *c = wintoclient(bev->window);
+            Window win = (bev->window == root) ? bev->subwindow : bev->window;
+            Client *c = (win != None) ? wintoclient(win) : NULL;
             if (c)
               focus(c);
           }
+          XAllowEvents(dpy, ReplayPointer, CurrentTime);
           break;
         }
         case ConfigureRequest: configurerequest(&ev); break;
