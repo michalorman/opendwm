@@ -43,6 +43,7 @@ struct Client {
   int ignoreunmap;
   int isfloating;
   int isfullscreen;
+  int isdialog;
   Client *next;
   Client *prev;
 };
@@ -324,10 +325,12 @@ static void focus(Client *c) {
   if (!XGetWindowAttributes(dpy, c->win, &wa) || wa.map_state != IsViewable)
     return;
   sel = c;
-  for (unsigned int i = 0; i < LENGTH(tagfocus); i++) {
-    unsigned int mask = 1u << i;
-    if (c->tags & mask)
-      tagfocus[i] = c;
+  if (!c->isdialog) {
+    for (unsigned int i = 0; i < LENGTH(tagfocus); i++) {
+      unsigned int mask = 1u << i;
+      if (c->tags & mask)
+        tagfocus[i] = c;
+    }
   }
   XSetInputFocus(dpy, c->win, RevertToPointerRoot, CurrentTime);
   XRaiseWindow(dpy, c->win);
@@ -390,11 +393,11 @@ static void manage(Window w, XWindowAttributes *wa) {
   c->tags = tagset;
   applyrules(c);
   c->isfullscreen = window_has_state(w, net_wm_state_fullscreen);
-  if (window_has_state(w, net_wm_state_modal)
-      || window_has_state(w, net_wm_state_above)
+  c->isdialog = window_has_state(w, net_wm_state_modal)
       || window_has_type(w, net_wm_window_type_dialog)
       || window_has_type(w, net_wm_window_type_utility)
-      || window_has_type(w, net_wm_window_type_splash)) {
+      || window_has_type(w, net_wm_window_type_splash);
+  if (c->isdialog || window_has_state(w, net_wm_state_above)) {
     c->isfloating = 1;
   }
   if (c->isfloating && !c->isfullscreen) {
@@ -1024,6 +1027,7 @@ static void unmapnotify(XEvent *e) {
     c->ignoreunmap--;
     return;
   }
+  unmanage(c, 0);
 }
 
 static void quit(const Arg *arg) {
