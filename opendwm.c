@@ -424,6 +424,12 @@ static void manage(Window w, XWindowAttributes *wa) {
 static void unmanage(Client *c, int destroyed) {
   if (!c)
     return;
+  Client *focus_c = NULL;
+  if (sel == c) {
+    focus_c = nexttiled(c->next);
+    if (!focus_c)
+      focus_c = prevtiled(c->prev);
+  }
   if (!destroyed) {
     XGrabServer(dpy);
     XSetWindowBorderWidth(dpy, c->win, 0);
@@ -435,7 +441,7 @@ static void unmanage(Client *c, int destroyed) {
       tagfocus[i] = NULL;
   }
   if (sel == c)
-    sel = NULL;
+    sel = focus_c;
   free(c);
   select_visible_focus();
   if (sel)
