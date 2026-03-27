@@ -79,7 +79,7 @@ static void incgaps(const Arg *arg);
 static void keypress(XEvent *e);
 static void killclient(const Arg *arg);
 static void manage(Window w, XWindowAttributes *wa);
-static void map_unmap_visible(void);
+static void showhide(Client *c);
 static void maprequest(XEvent *e);
 static void monocle(void);
 static void movefocus(Client *c);
@@ -681,18 +681,15 @@ static void monocle(void) {
   }
 }
 
-static void map_unmap_visible(void) {
-  for (Client *c = clients; c; c = c->next) {
-    if (isvisible(c)) {
-      if (!c->ismapped) {
-        XMapWindow(dpy, c->win);
-        c->ismapped = 1;
-      }
-    } else if (c->ismapped) {
-      XUnmapWindow(dpy, c->win);
-      c->ignoreunmap++;
-      c->ismapped = 0;
-    }
+static void showhide(Client *c) {
+  if (!c)
+    return;
+  if (isvisible(c)) {
+    XMoveWindow(dpy, c->win, c->x, c->y);
+    showhide(c->next);
+  } else {
+    showhide(c->next);
+    XMoveWindow(dpy, c->win, -(c->w + 2 * borderpx) * 2, c->y);
   }
 }
 
@@ -748,7 +745,7 @@ static void select_visible_focus(void) {
 }
 
 static void arrange(void) {
-  map_unmap_visible();
+  showhide(clients);
   select_visible_focus();
   apply_layout();
   apply_fullscreen();
