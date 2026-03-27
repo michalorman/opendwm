@@ -11,8 +11,10 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <signal.h>
 #include <string.h>
 #include <sys/select.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -53,6 +55,7 @@ static void attach(Client *c);
 static void applyrules(Client *c);
 static void apply_layout(void);
 static void apply_fullscreen(void);
+static void restack(void);
 static void bar_cleanup(void);
 static void bar_init(void);
 static int bar_is_visible(void);
@@ -84,6 +87,7 @@ static void run(void);
 static void select_visible_focus(void);
 static void setlayout(const Arg *arg);
 static void setfullscreen(Client *c, int fullscreen);
+static void sigchld(int unused);
 static void setup(void);
 static void spawn(const Arg *arg);
 static int tag_index_from_mask(unsigned int mask);
@@ -372,8 +376,7 @@ static void focus(Client *c) {
     }
   }
   drawbar();
-  if (topbar && bar_is_visible())
-    XRaiseWindow(dpy, barwin);
+  restack();
 }
 
 static void configure(Client *c) {
@@ -691,6 +694,23 @@ static void apply_fullscreen(void) {
   }
 }
 
+static void restack(void) {
+  for (Client *c = clients; c; c = c->next) {
+    if (!isvisible(c) || c->isfullscreen)
+      continue;
+    if (window_has_state(c->win, net_wm_state_above))
+      XRaiseWindow(dpy, c->win);
+  }
+  if (has_visible_fullscreen()) {
+    for (Client *c = clients; c; c = c->next) {
+      if (isvisible(c) && c->isfullscreen)
+        XRaiseWindow(dpy, c->win);
+    }
+  }
+  if (topbar && bar_is_visible())
+    XRaiseWindow(dpy, barwin);
+}
+
 static void select_visible_focus(void) {
   if (sel && !isvisible(sel))
     sel = NULL;
@@ -714,8 +734,10 @@ static void arrange(void) {
   update_bar_visibility();
   if (sel)
     focus(sel);
-  else
+  else {
     XSetInputFocus(dpy, root, RevertToPointerRoot, CurrentTime);
+    restack();
+  }
   drawbar();
 }
 
@@ -1090,7 +1112,27 @@ static void spawn(const Arg *arg) {
   }
 }
 
+static void sigchld(int unused) {
+  int saved_errno = errno;
+
+  (void)unused;
+  while (waitpid(-1, NULL, WNOHANG) > 0)
+    ;
+
+  errno = saved_errno;
+}
+
 static void setup(void) {
+  struct sigaction sa;
+
+  memset(&sa, 0, sizeof(sa));
+  sa.sa_handler = sigchld;
+  sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+  if (sigemptyset(&sa.sa_mask) == -1)
+    die("sigemptyset failed");
+  if (sigaction(SIGCHLD, &sa, NULL) == -1)
+    die("sigaction failed");
+
   if (!(dpy = XOpenDisplay(NULL)))
     die("cannot open display");
   XSetErrorHandler(xerror);
