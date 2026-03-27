@@ -41,9 +41,13 @@ typedef struct Client Client;
 struct Client {
   Window win;
   int x, y, w, h;
+  int oldx, oldy, oldw, oldh;
+  int oldbw;
   unsigned int tags;
   int ignoreunmap;
+  int ismapped;
   int isfloating;
+  int oldisfloating;
   int isfullscreen;
   int isdialog;
   Client *next;
@@ -85,6 +89,7 @@ static void quit(const Arg *arg);
 static void resize(Client *c, int x, int y, int w, int h);
 static void run(void);
 static void select_visible_focus(void);
+static void scan(void);
 static void setlayout(const Arg *arg);
 static void setfullscreen(Client *c, int fullscreen);
 static void sigchld(int unused);
@@ -389,7 +394,7 @@ static void configure(Client *c) {
   ce.y = c->y;
   ce.width = c->w;
   ce.height = c->h;
-  ce.border_width = (layout == LAYOUT_MONOCLE) ? 0 : borderpx;
+  ce.border_width = (layout == LAYOUT_MONOCLE || c->isfullscreen) ? 0 : borderpx;
   ce.above = None;
   ce.override_redirect = False;
   XSendEvent(dpy, c->win, False, StructureNotifyMask, (XEvent *)&ce);
@@ -418,6 +423,11 @@ static void manage(Window w, XWindowAttributes *wa) {
   c->y = wa->y;
   c->w = wa->width;
   c->h = wa->height;
+  c->oldx = c->x;
+  c->oldy = c->y;
+  c->oldw = c->w;
+  c->oldh = c->h;
+  c->oldbw = wa->border_width;
   c->tags = tagset;
   applyrules(c);
   c->isfullscreen = window_has_state(w, net_wm_state_fullscreen);
@@ -428,9 +438,15 @@ static void manage(Window w, XWindowAttributes *wa) {
   Window transient = None;
   if (!c->isdialog && XGetTransientForHint(dpy, w, &transient))
     c->isdialog = 1;
+  if (transient != None) {
+    Client *parent = wintoclient(transient);
+    if (parent)
+      c->tags = parent->tags;
+  }
   if (c->isdialog || window_has_state(w, net_wm_state_above)) {
     c->isfloating = 1;
   }
+  c->oldisfloating = c->isfloating;
   if (c->isfloating && !c->isfullscreen) {
     int by = (bar_is_visible() ? barheight : 0);
     int x = (sw - c->w) / 2;
@@ -448,6 +464,7 @@ static void manage(Window w, XWindowAttributes *wa) {
   XSetWindowBorderWidth(dpy, w, (layout == LAYOUT_MONOCLE || c->isfullscreen) ? 0 : borderpx);
   XSetWindowBorder(dpy, w, col_border_norm);
   XMapWindow(dpy, w);
+  c->ismapped = 1;
   focus(c);
   arrange();
 }
@@ -470,7 +487,7 @@ static void unmanage(Client *c, int destroyed) {
   }
   if (!destroyed) {
     XGrabServer(dpy);
-    XSetWindowBorderWidth(dpy, c->win, 0);
+    XSetWindowBorderWidth(dpy, c->win, c->oldbw);
     XUngrabServer(dpy);
   }
   detach(c);
@@ -666,11 +683,15 @@ static void monocle(void) {
 
 static void map_unmap_visible(void) {
   for (Client *c = clients; c; c = c->next) {
-    if (isvisible(c))
-      XMapWindow(dpy, c->win);
-    else {
+    if (isvisible(c)) {
+      if (!c->ismapped) {
+        XMapWindow(dpy, c->win);
+        c->ismapped = 1;
+      }
+    } else if (c->ismapped) {
       XUnmapWindow(dpy, c->win);
       c->ignoreunmap++;
+      c->ismapped = 0;
     }
   }
 }
@@ -723,7 +744,7 @@ static void select_visible_focus(void) {
     }
   }
   if (!sel)
-    sel = nexttiled(clients);
+    sel = nextvisible(clients);
 }
 
 static void arrange(void) {
@@ -1073,7 +1094,23 @@ static void configurerequest(XEvent *e) {
     XConfigureWindow(dpy, ev->window, ev->value_mask, &wc);
     return;
   }
-  arrange();
+
+  if (c->isfloating && !c->isfullscreen) {
+    if (ev->value_mask & CWX)
+      c->x = ev->x;
+    if (ev->value_mask & CWY)
+      c->y = ev->y;
+    if (ev->value_mask & CWWidth)
+      c->w = ev->width;
+    if (ev->value_mask & CWHeight)
+      c->h = ev->height;
+    XMoveResizeWindow(dpy, c->win, c->x, c->y, c->w, c->h);
+    configure(c);
+    restack();
+    return;
+  }
+
+  configure(c);
 }
 
 static void destroynotify(XEvent *e) {
@@ -1090,8 +1127,10 @@ static void unmapnotify(XEvent *e) {
     return;
   if (c->ignoreunmap > 0) {
     c->ignoreunmap--;
+    c->ismapped = 0;
     return;
   }
+  c->ismapped = 0;
   unmanage(c, 0);
 }
 
@@ -1190,6 +1229,7 @@ static void setup(void) {
     XDefineCursor(dpy, barwin, cursor);
 
   grabkeys();
+  scan();
   updateclock();
   drawbar();
   starting = 0;
@@ -1260,12 +1300,55 @@ static int window_has_type(Window w, Atom type) {
 static void setfullscreen(Client *c, int fullscreen) {
   if (!c || c->isfullscreen == fullscreen)
     return;
-  c->isfullscreen = fullscreen;
+
   if (fullscreen) {
+    c->oldx = c->x;
+    c->oldy = c->y;
+    c->oldw = c->w;
+    c->oldh = c->h;
+    c->oldisfloating = c->isfloating;
+    c->isfullscreen = 1;
     XSetWindowBorderWidth(dpy, c->win, 0);
     XRaiseWindow(dpy, c->win);
+  } else {
+    c->isfullscreen = 0;
+    c->isfloating = c->oldisfloating;
+    c->x = c->oldx;
+    c->y = c->oldy;
+    c->w = c->oldw;
+    c->h = c->oldh;
   }
   arrange();
+}
+
+static void scan(void) {
+  Window dummy1, dummy2, *wins = NULL;
+  unsigned int num = 0;
+  XWindowAttributes wa;
+
+  if (!XQueryTree(dpy, root, &dummy1, &dummy2, &wins, &num))
+    return;
+
+  for (unsigned int i = 0; i < num; i++) {
+    if (!XGetWindowAttributes(dpy, wins[i], &wa) || wa.override_redirect)
+      continue;
+    if (XGetTransientForHint(dpy, wins[i], &dummy1))
+      continue;
+    if (wa.map_state == IsViewable)
+      manage(wins[i], &wa);
+  }
+
+  for (unsigned int i = 0; i < num; i++) {
+    if (!XGetWindowAttributes(dpy, wins[i], &wa) || wa.override_redirect)
+      continue;
+    if (!XGetTransientForHint(dpy, wins[i], &dummy1))
+      continue;
+    if (wa.map_state == IsViewable)
+      manage(wins[i], &wa);
+  }
+
+  if (wins)
+    XFree(wins);
 }
 
 static int xerror(Display *dpy, XErrorEvent *ee) {
