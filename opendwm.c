@@ -102,6 +102,8 @@ static void view(const Arg *arg);
 static void tagandview(const Arg *arg);
 static Client *nexttiled(Client *c);
 static Client *prevtiled(Client *c);
+static Client *nextvisible(Client *c);
+static Client *prevvisible(Client *c);
 static void swapclients(Client *a, Client *b);
 static int window_has_state(Window w, Atom state);
 static int window_has_type(Window w, Atom type);
@@ -160,6 +162,7 @@ static long long status_refresh_at_ms = 0;
 static unsigned int numlockmask = 0;
 static Client *clients = NULL;
 static Client *sel = NULL;
+static Client *lastsel = NULL;
 static Client *tagfocus[10] = { NULL };
 static unsigned int tagset = 1;
 static int layout = LAYOUT_TILE;
@@ -187,6 +190,14 @@ static void attach(Client *c) {
   if (clients->next)
     clients->next->prev = c;
   clients->next = c;
+}
+
+static int client_in_list(Client *c) {
+  for (Client *it = clients; it; it = it->next) {
+    if (it == c)
+      return 1;
+  }
+  return 0;
 }
 
 static void swapclients(Client *a, Client *b) {
@@ -312,6 +323,18 @@ static Client *prevtiled(Client *c) {
   return c;
 }
 
+static Client *nextvisible(Client *c) {
+  for (; c && !isvisible(c); c = c->next) {
+  }
+  return c;
+}
+
+static Client *prevvisible(Client *c) {
+  for (; c && !isvisible(c); c = c->prev) {
+  }
+  return c;
+}
+
 static void movefocus(Client *c) {
   if (!c)
     return;
@@ -324,6 +347,8 @@ static void focus(Client *c) {
   XWindowAttributes wa;
   if (!XGetWindowAttributes(dpy, c->win, &wa) || wa.map_state != IsViewable)
     return;
+  if (sel && sel != c)
+    lastsel = sel;
   sel = c;
   if (!c->isdialog) {
     for (unsigned int i = 0; i < LENGTH(tagfocus); i++) {
@@ -397,6 +422,9 @@ static void manage(Window w, XWindowAttributes *wa) {
       || window_has_type(w, net_wm_window_type_dialog)
       || window_has_type(w, net_wm_window_type_utility)
       || window_has_type(w, net_wm_window_type_splash);
+  Window transient = None;
+  if (!c->isdialog && XGetTransientForHint(dpy, w, &transient))
+    c->isdialog = 1;
   if (c->isdialog || window_has_state(w, net_wm_state_above)) {
     c->isfloating = 1;
   }
@@ -426,9 +454,16 @@ static void unmanage(Client *c, int destroyed) {
     return;
   Client *focus_c = NULL;
   if (sel == c) {
-    focus_c = nexttiled(c->next);
-    if (!focus_c)
-      focus_c = prevtiled(c->prev);
+    if (lastsel && lastsel != c && client_in_list(lastsel) && isvisible(lastsel)) {
+      XWindowAttributes wa;
+      if (XGetWindowAttributes(dpy, lastsel->win, &wa) && wa.map_state == IsViewable)
+        focus_c = lastsel;
+    }
+    if (!focus_c) {
+      focus_c = nextvisible(c->next);
+      if (!focus_c)
+        focus_c = prevvisible(c->prev);
+    }
   }
   if (!destroyed) {
     XGrabServer(dpy);
@@ -442,6 +477,8 @@ static void unmanage(Client *c, int destroyed) {
   }
   if (sel == c)
     sel = focus_c;
+  if (lastsel == c)
+    lastsel = NULL;
   free(c);
   select_visible_focus();
   if (sel)
