@@ -525,7 +525,7 @@ static void focusstack(const Arg *arg) {
 
 static void movestack(const Arg *arg) {
   Client *c = NULL;
-  if (!sel)
+  if (!sel || sel->isfloating)
     return;
   if (arg->i > 0) {
     c = nexttiled(sel->next);
@@ -714,11 +714,21 @@ static void apply_fullscreen(void) {
 
 static void restack(void) {
   for (Client *c = clients; c; c = c->next) {
-    if (!isvisible(c) || c->isfullscreen)
+    if (!isvisible(c) || c->isfullscreen || c == sel)
       continue;
-    if (window_has_state(c->win, net_wm_state_above))
+    if (!c->isfloating)
       XRaiseWindow(dpy, c->win);
   }
+  if (sel && isvisible(sel) && !sel->isfullscreen && !sel->isfloating)
+    XRaiseWindow(dpy, sel->win);
+  for (Client *c = clients; c; c = c->next) {
+    if (!isvisible(c) || c->isfullscreen || c == sel)
+      continue;
+    if (c->isfloating)
+      XRaiseWindow(dpy, c->win);
+  }
+  if (sel && isvisible(sel) && !sel->isfullscreen && sel->isfloating)
+    XRaiseWindow(dpy, sel->win);
   if (has_visible_fullscreen()) {
     for (Client *c = clients; c; c = c->next) {
       if (isvisible(c) && c->isfullscreen)
@@ -1061,7 +1071,7 @@ static void killclient(const Arg *arg) {
 
 static void promotemaster(const Arg *arg) {
   (void)arg;
-  if (!sel || sel == clients)
+  if (!sel || sel->isfloating || sel == clients)
     return;
   swapclients(clients, sel);
   arrange();
@@ -1444,7 +1454,7 @@ static void run(void) {
           } else {
             Window win = (bev->window == root) ? bev->subwindow : bev->window;
             Client *c = (win != None) ? wintoclient(win) : NULL;
-            if (c)
+            if (c && bev->button >= Button1 && bev->button <= Button3 && c != sel)
               focus(c);
           }
           XAllowEvents(dpy, ReplayPointer, CurrentTime);
