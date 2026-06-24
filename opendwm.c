@@ -33,6 +33,13 @@ typedef struct {
 } Key;
 
 typedef struct {
+  unsigned int mod;
+  unsigned int button;
+  void (*func)(const Arg *arg);
+  const Arg arg;
+} Button;
+
+typedef struct {
   const char *class;
   int isfloating;
 } Rule;
@@ -63,6 +70,7 @@ static void restack(void);
 static void bar_cleanup(void);
 static void bar_init(void);
 static int bar_is_visible(void);
+static void buttonpress(XEvent *e);
 static void cleanup(void);
 static void configure(Client *c);
 static void configurerequest(XEvent *e);
@@ -73,6 +81,8 @@ static void focus(Client *c);
 static void focusstack(const Arg *arg);
 static int has_visible_fullscreen(void);
 static int is_single_tag(unsigned int mask);
+static unsigned int cleanmask(unsigned int mask);
+static void grabbuttons(Client *c);
 static void grabkeys(void);
 static void incmfact(const Arg *arg);
 static void incgaps(const Arg *arg);
@@ -82,6 +92,7 @@ static void manage(Window w, XWindowAttributes *wa);
 static void showhide(Client *c);
 static void maprequest(XEvent *e);
 static void monocle(void);
+static void movemouse(const Arg *arg);
 static void movefocus(Client *c);
 static void movestack(const Arg *arg);
 static void promotemaster(const Arg *arg);
@@ -121,6 +132,7 @@ static int xerror(Display *dpy, XErrorEvent *ee);
 
 #define TAGMASK ((1u << 10) - 1)
 #define LENGTH(X) (sizeof(X) / sizeof((X)[0]))
+#define MOUSEMASK (ButtonPressMask|ButtonReleaseMask|PointerMotionMask)
 #define TAGKEYS(KEYSYM, TAG) \
   { MODKEY, KEYSYM, view, { .ui = 1u << (TAG) } }, \
   { MODKEY|ShiftMask, KEYSYM, tagandview, { .ui = 1u << (TAG) } }
@@ -320,6 +332,10 @@ static int tag_index_from_mask(unsigned int mask) {
   return -1;
 }
 
+static unsigned int cleanmask(unsigned int mask) {
+  return mask & ~(numlockmask|LockMask);
+}
+
 static Client *nexttiled(Client *c) {
   for (; c && (!isvisible(c) || c->isfloating || c->isfullscreen); c = c->next) {
   }
@@ -461,6 +477,7 @@ static void manage(Window w, XWindowAttributes *wa) {
   }
   attach(c);
   XSelectInput(dpy, w, ButtonPressMask | EnterWindowMask | FocusChangeMask | PropertyChangeMask | StructureNotifyMask);
+  grabbuttons(c);
   XSetWindowBorderWidth(dpy, w, (layout == LAYOUT_MONOCLE || c->isfullscreen) ? 0 : borderpx);
   XSetWindowBorder(dpy, w, col_border_norm);
   XMapWindow(dpy, w);
@@ -679,6 +696,39 @@ static void monocle(void) {
     XSetWindowBorderWidth(dpy, c->win, 0);
     resize(c, wx, wy, ww, wh);
   }
+}
+
+static void movemouse(const Arg *arg) {
+  (void)arg;
+  if (!sel || !sel->isfloating || sel->isfullscreen)
+    return;
+
+  Client *c = sel;
+  Window dummy;
+  int startx = c->x;
+  int starty = c->y;
+  int xroot, yroot, dummy_i;
+  unsigned int dummy_ui;
+
+  if (!XQueryPointer(dpy, root, &dummy, &dummy, &xroot, &yroot,
+                     &dummy_i, &dummy_i, &dummy_ui))
+    return;
+  if (XGrabPointer(dpy, root, False, MOUSEMASK, GrabModeAsync, GrabModeAsync,
+                   None, None, CurrentTime) != GrabSuccess)
+    return;
+
+  for (;;) {
+    XEvent ev;
+    XMaskEvent(dpy, MOUSEMASK, &ev);
+    if (ev.type == MotionNotify) {
+      resize(c, startx + ev.xmotion.x_root - xroot,
+             starty + ev.xmotion.y_root - yroot, c->w, c->h);
+    } else if (ev.type == ButtonRelease) {
+      break;
+    }
+  }
+  XUngrabPointer(dpy, CurrentTime);
+  restack();
 }
 
 static void showhide(Client *c) {
@@ -996,6 +1046,19 @@ static int getvolume(char *buf, size_t buflen) {
   return 1;
 }
 
+static void grabbuttons(Client *c) {
+  unsigned int mods[] = { 0, LockMask, numlockmask, numlockmask|LockMask };
+
+  XUngrabButton(dpy, AnyButton, AnyModifier, c->win);
+  for (unsigned int i = 0; i < LENGTH(buttons); i++) {
+    for (unsigned int j = 0; j < LENGTH(mods); j++) {
+      XGrabButton(dpy, buttons[i].button, buttons[i].mod | mods[j], c->win,
+                  False, ButtonPressMask, GrabModeAsync, GrabModeAsync,
+                  None, None);
+    }
+  }
+}
+
 static void grabkeys(void) {
   updatenumlockmask();
   XUngrabKey(dpy, AnyKey, AnyModifier, root);
@@ -1025,7 +1088,7 @@ static void keypress(XEvent *e) {
   KeySym sym = XkbKeycodeToKeysym(dpy, (KeyCode)ev->keycode, 0, 0);
   for (unsigned int i = 0; i < LENGTH(keys); i++) {
     if (keys[i].keysym == sym
-        && (ev->state & ~(numlockmask|LockMask)) == keys[i].mod) {
+        && cleanmask(ev->state) == keys[i].mod) {
       if (keys[i].func)
         keys[i].func(&(keys[i].arg));
       if (sym == XF86XK_AudioRaiseVolume || sym == XF86XK_AudioLowerVolume
@@ -1039,6 +1102,40 @@ static void keypress(XEvent *e) {
       }
     }
   }
+}
+
+static void buttonpress(XEvent *e) {
+  XButtonEvent *ev = &e->xbutton;
+  int handled = 0;
+
+  if (topbar && showbar && ev->window == barwin && ev->button == Button1) {
+    for (unsigned int i = 0; i < LENGTH(tags); i++) {
+      if (ev->x >= tagx[i] && ev->x < tagx[i] + tagw[i]) {
+        Arg a = { .ui = 1u << i };
+        view(&a);
+        handled = 1;
+        break;
+      }
+    }
+  } else {
+    Window win = (ev->window == root) ? ev->subwindow : ev->window;
+    Client *c = (win != None) ? wintoclient(win) : NULL;
+    if (c && ev->button >= Button1 && ev->button <= Button3 && c != sel)
+      focus(c);
+    if (c) {
+      for (unsigned int i = 0; i < LENGTH(buttons); i++) {
+        if (buttons[i].button == ev->button
+            && cleanmask(ev->state) == buttons[i].mod) {
+          if (buttons[i].func)
+            buttons[i].func(&(buttons[i].arg));
+          handled = 1;
+          break;
+        }
+      }
+    }
+  }
+
+  XAllowEvents(dpy, handled ? AsyncPointer : ReplayPointer, CurrentTime);
 }
 
 static void killclient(const Arg *arg) {
@@ -1441,25 +1538,7 @@ static void run(void) {
         drawbar();
       switch (ev.type) {
         case MapRequest: maprequest(&ev); break;
-        case ButtonPress: {
-          XButtonEvent *bev = &ev.xbutton;
-          if (topbar && showbar && bev->window == barwin && bev->button == Button1) {
-            for (unsigned int i = 0; i < LENGTH(tags); i++) {
-              if (bev->x >= tagx[i] && bev->x < tagx[i] + tagw[i]) {
-                Arg a = { .ui = 1u << i };
-                view(&a);
-                break;
-              }
-            }
-          } else {
-            Window win = (bev->window == root) ? bev->subwindow : bev->window;
-            Client *c = (win != None) ? wintoclient(win) : NULL;
-            if (c && bev->button >= Button1 && bev->button <= Button3 && c != sel)
-              focus(c);
-          }
-          XAllowEvents(dpy, ReplayPointer, CurrentTime);
-          break;
-        }
+        case ButtonPress: buttonpress(&ev); break;
         case ConfigureRequest: configurerequest(&ev); break;
         case ClientMessage: {
           XClientMessageEvent *cm = &ev.xclient;

@@ -69,3 +69,8 @@ static const Key keys[] = {
   { MODKEY, XK_KP_Add, incgaps, { .i = +2 } },
 
 };
+
+/* Mouse bindings */
+static const Button buttons[] = {
+  { MODKEY, Button1, movemouse, { .i = 0 } },
+};

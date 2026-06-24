@@ -99,3 +99,8 @@ static const Key keys[] = {
   { 0, XF86XK_AudioPrev, spawn, { .v = prevcmd } },
 
 };
+
+/* Mouse bindings */
+static const Button buttons[] = {
+  { MODKEY, Button1, movemouse, { .i = 0 } },
+};
