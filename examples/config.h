@@ -91,9 +91,9 @@ static const Key keys[] = {
   { MODKEY, XK_plus, incgaps, { .i = +2 } },
   { MODKEY, XK_KP_Add, incgaps, { .i = +2 } },
 
-  { 0, XF86XK_AudioRaiseVolume, spawn, { .v = volupcmd } },
-  { 0, XF86XK_AudioLowerVolume, spawn, { .v = voldowncmd } },
-  { 0, XF86XK_AudioMute, spawn, { .v = volmutecmd } },
+  { 0, XF86XK_AudioRaiseVolume, spawnserial, { .v = volupcmd } },
+  { 0, XF86XK_AudioLowerVolume, spawnserial, { .v = voldowncmd } },
+  { 0, XF86XK_AudioMute, spawnserial, { .v = volmutecmd } },
   { 0, XF86XK_AudioPlay, spawn, { .v = playpausecmd } },
   { 0, XF86XK_AudioNext, spawn, { .v = nextcmd } },
   { 0, XF86XK_AudioPrev, spawn, { .v = prevcmd } },

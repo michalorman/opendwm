@@ -47,22 +47,27 @@ typedef struct {
 typedef struct Client Client;
 struct Client {
   Window win;
+  Window transient_for;
   int x, y, w, h;
   int oldx, oldy, oldw, oldh;
   int oldbw;
   unsigned int tags;
   int ignoreunmap;
   int ismapped;
+  int rulefloating;
   int isfloating;
   int oldisfloating;
   int isfullscreen;
   int isdialog;
+  int isabove;
   Client *next;
   Client *prev;
+  Client *snext;
 };
 
 static void arrange(void);
 static void attach(Client *c);
+static void attachstack(Client *c);
 static void applyrules(Client *c);
 static void apply_layout(void);
 static void apply_fullscreen(void);
@@ -76,10 +81,12 @@ static void configure(Client *c);
 static void configurerequest(XEvent *e);
 static void destroynotify(XEvent *e);
 static void detach(Client *c);
+static void detachstack(Client *c);
 static void drawbar(void);
 static void focus(Client *c);
 static void focusstack(const Arg *arg);
 static int has_visible_fullscreen(void);
+static int is_transient_for_fullscreen(Client *c);
 static int is_single_tag(unsigned int mask);
 static unsigned int cleanmask(unsigned int mask);
 static void grabbuttons(Client *c);
@@ -98,14 +105,19 @@ static void movestack(const Arg *arg);
 static void promotemaster(const Arg *arg);
 static void quit(const Arg *arg);
 static void resize(Client *c, int x, int y, int w, int h);
+static void refreshclientrole(Client *c, int initial);
 static void run(void);
 static void select_visible_focus(void);
 static void scan(void);
 static void setlayout(const Arg *arg);
 static void setfullscreen(Client *c, int fullscreen);
+static void setwindowstate(Window w, Atom state, int enabled);
 static void sigchld(int unused);
+static void spawnserial(const Arg *arg);
 static void setup(void);
 static void spawn(const Arg *arg);
+static void startserial(void);
+static void reapchildren(void);
 static int tag_index_from_mask(unsigned int mask);
 static void tile(void);
 static void togglebar(const Arg *arg);
@@ -129,9 +141,11 @@ static int window_has_state(Window w, Atom state);
 static int window_has_type(Window w, Atom type);
 static Client *wintoclient(Window w);
 static int xerror(Display *dpy, XErrorEvent *ee);
+static int xerrorstart(Display *dpy, XErrorEvent *ee);
 
 #define TAGMASK ((1u << 10) - 1)
 #define LENGTH(X) (sizeof(X) / sizeof((X)[0]))
+#define SPAWN_QUEUE_SIZE 64
 #define MOUSEMASK (ButtonPressMask|ButtonReleaseMask|PointerMotionMask)
 #define TAGKEYS(KEYSYM, TAG) \
   { MODKEY, KEYSYM, view, { .ui = 1u << (TAG) } }, \
@@ -176,12 +190,11 @@ static int tagx[10];
 static int tagw[10];
 static int sw, sh;
 static int running = 1;
-static int starting = 1;
 static int statusdirty = 0;
-static int status_refresh_pending = 0;
-static long long status_refresh_at_ms = 0;
+static int wm_detected = 0;
 static unsigned int numlockmask = 0;
 static Client *clients = NULL;
+static Client *stack = NULL;
 static Client *sel = NULL;
 static Client *lastsel = NULL;
 static Client *tagfocus[10] = { NULL };
@@ -193,6 +206,11 @@ static char righttext[96] = {0};
 static int has_icon_vol = 0;
 static int has_icon_mute = 0;
 static int has_icon_mem = 0;
+static volatile sig_atomic_t child_exited = 0;
+static pid_t serial_pid = -1;
+static const void *spawn_queue[SPAWN_QUEUE_SIZE];
+static unsigned int spawn_queue_head = 0;
+static unsigned int spawn_queue_count = 0;
 
 static void die(const char *msg) {
   fprintf(stderr, "opendwm: %s\n", msg);
@@ -211,6 +229,11 @@ static void attach(Client *c) {
   if (clients->next)
     clients->next->prev = c;
   clients->next = c;
+}
+
+static void attachstack(Client *c) {
+  c->snext = stack;
+  stack = c;
 }
 
 static int client_in_list(Client *c) {
@@ -276,6 +299,23 @@ static void detach(Client *c) {
   c->next = c->prev = NULL;
 }
 
+static void detachstack(Client *c) {
+  Client **it = &stack;
+
+  while (*it && *it != c)
+    it = &(*it)->snext;
+  if (*it)
+    *it = c->snext;
+  c->snext = NULL;
+}
+
+static void raisestack(Client *c) {
+  if (!c || stack == c)
+    return;
+  detachstack(c);
+  attachstack(c);
+}
+
 static Client *wintoclient(Window w) {
   for (Client *c = clients; c; c = c->next)
     if (c->win == w)
@@ -285,12 +325,12 @@ static Client *wintoclient(Window w) {
 
 static void applyrules(Client *c) {
   XClassHint ch = {0};
-  c->isfloating = 0;
+  c->rulefloating = 0;
   if (!XGetClassHint(dpy, c->win, &ch))
     return;
   for (unsigned int i = 0; rules[i].class; i++) {
     if (ch.res_class && strcmp(rules[i].class, ch.res_class) == 0) {
-      c->isfloating = rules[i].isfloating;
+      c->rulefloating = rules[i].isfloating;
       break;
     }
   }
@@ -298,6 +338,69 @@ static void applyrules(Client *c) {
     XFree(ch.res_class);
   if (ch.res_name)
     XFree(ch.res_name);
+}
+
+static void synctransienttags(void) {
+  unsigned int count = 0;
+
+  for (Client *c = clients; c; c = c->next)
+    count++;
+  for (unsigned int pass = 0; pass < count; pass++) {
+    int changed = 0;
+    for (Client *c = clients; c; c = c->next) {
+      Client *parent = wintoclient(c->transient_for);
+      if (parent && c->tags != parent->tags) {
+        c->tags = parent->tags;
+        changed = 1;
+      }
+    }
+    if (!changed)
+      break;
+  }
+}
+
+static void refreshclientrole(Client *c, int initial) {
+  Window transient = None;
+  int isdialog;
+  int isabove;
+  int wasfloating = c->isfloating;
+
+  XGetTransientForHint(dpy, c->win, &transient);
+  isdialog = transient != None
+      || window_has_state(c->win, net_wm_state_modal)
+      || window_has_type(c->win, net_wm_window_type_dialog)
+      || window_has_type(c->win, net_wm_window_type_utility)
+      || window_has_type(c->win, net_wm_window_type_splash);
+  isabove = window_has_state(c->win, net_wm_state_above);
+
+  c->transient_for = transient;
+  c->isdialog = isdialog;
+  c->isabove = isabove;
+  if (c->isfullscreen)
+    c->oldisfloating = c->rulefloating || isdialog || isabove;
+  else
+    c->isfloating = c->rulefloating || isdialog || isabove;
+
+  if (transient != None) {
+    Client *parent = wintoclient(transient);
+    if (parent && (initial || c->tags != parent->tags))
+      c->tags = parent->tags;
+  }
+  if (!initial)
+    synctransienttags();
+
+  if (!initial && !wasfloating && c->isfloating && !c->isfullscreen) {
+    int by = bar_is_visible() ? barheight : 0;
+    c->w = c->oldw;
+    c->h = c->oldh;
+    c->x = (sw - c->w) / 2;
+    c->y = (sh - by - c->h) / 2 + by;
+    if (c->x < 0)
+      c->x = 0;
+    if (c->y < by)
+      c->y = by;
+    resize(c, c->x, c->y, c->w, c->h);
+  }
 }
 
 static int isvisible(Client *c) {
@@ -375,6 +478,7 @@ static void focus(Client *c) {
   if (sel && sel != c)
     lastsel = sel;
   sel = c;
+  raisestack(c);
   if (!c->isdialog) {
     for (unsigned int i = 0; i < LENGTH(tagfocus); i++) {
       unsigned int mask = 1u << i;
@@ -383,7 +487,6 @@ static void focus(Client *c) {
     }
   }
   XSetInputFocus(dpy, c->win, RevertToPointerRoot, CurrentTime);
-  XRaiseWindow(dpy, c->win);
   for (Client *it = clients; it; it = it->next) {
     if (!isvisible(it))
       continue;
@@ -422,6 +525,10 @@ static void resize(Client *c, int x, int y, int w, int h) {
     return;
   if (wa.map_state == IsUnmapped)
     return;
+  if (w < 1)
+    w = 1;
+  if (h < 1)
+    h = 1;
   c->x = x;
   c->y = y;
   c->w = w;
@@ -447,22 +554,9 @@ static void manage(Window w, XWindowAttributes *wa) {
   c->tags = tagset;
   applyrules(c);
   c->isfullscreen = window_has_state(w, net_wm_state_fullscreen);
-  c->isdialog = window_has_state(w, net_wm_state_modal)
-      || window_has_type(w, net_wm_window_type_dialog)
-      || window_has_type(w, net_wm_window_type_utility)
-      || window_has_type(w, net_wm_window_type_splash);
-  Window transient = None;
-  if (!c->isdialog && XGetTransientForHint(dpy, w, &transient))
-    c->isdialog = 1;
-  if (transient != None) {
-    Client *parent = wintoclient(transient);
-    if (parent)
-      c->tags = parent->tags;
-  }
-  if (c->isdialog || window_has_state(w, net_wm_state_above)) {
-    c->isfloating = 1;
-  }
-  c->oldisfloating = c->isfloating;
+  refreshclientrole(c, 1);
+  if (!c->isfullscreen)
+    c->oldisfloating = c->isfloating;
   if (c->isfloating && !c->isfullscreen) {
     int by = (bar_is_visible() ? barheight : 0);
     int x = (sw - c->w) / 2;
@@ -476,6 +570,7 @@ static void manage(Window w, XWindowAttributes *wa) {
     XMoveResizeWindow(dpy, w, c->x, c->y, c->w, c->h);
   }
   attach(c);
+  attachstack(c);
   XSelectInput(dpy, w, ButtonPressMask | EnterWindowMask | FocusChangeMask | PropertyChangeMask | StructureNotifyMask);
   grabbuttons(c);
   XSetWindowBorderWidth(dpy, w, (layout == LAYOUT_MONOCLE || c->isfullscreen) ? 0 : borderpx);
@@ -491,7 +586,13 @@ static void unmanage(Client *c, int destroyed) {
     return;
   Client *focus_c = NULL;
   if (sel == c) {
-    if (lastsel && lastsel != c && client_in_list(lastsel) && isvisible(lastsel)) {
+    Client *parent = wintoclient(c->transient_for);
+    if (parent && isvisible(parent)) {
+      XWindowAttributes wa;
+      if (XGetWindowAttributes(dpy, parent->win, &wa) && wa.map_state == IsViewable)
+        focus_c = parent;
+    }
+    if (!focus_c && lastsel && lastsel != c && client_in_list(lastsel) && isvisible(lastsel)) {
       XWindowAttributes wa;
       if (XGetWindowAttributes(dpy, lastsel->win, &wa) && wa.map_state == IsViewable)
         focus_c = lastsel;
@@ -508,6 +609,7 @@ static void unmanage(Client *c, int destroyed) {
     XUngrabServer(dpy);
   }
   detach(c);
+  detachstack(c);
   for (unsigned int i = 0; i < LENGTH(tagfocus); i++) {
     if (tagfocus[i] == c)
       tagfocus[i] = NULL;
@@ -591,6 +693,8 @@ static void incmfact(const Arg *arg) {
     if (stackmax < maxfact)
       maxfact = stackmax;
   }
+  if (maxfact < minfact)
+    maxfact = minfact;
   if (mfact < minfact)
     mfact = minfact;
   if (mfact > maxfact)
@@ -619,8 +723,10 @@ static void view(const Arg *arg) {
 static void tagandview(const Arg *arg) {
   if ((arg->ui & TAGMASK) == 0)
     return;
-  if (sel)
+  if (sel) {
     sel->tags = arg->ui & TAGMASK;
+    synctransienttags();
+  }
   tagset = arg->ui & TAGMASK;
   select_visible_focus();
   arrange();
@@ -628,59 +734,93 @@ static void tagandview(const Arg *arg) {
 
 static void tile(void) {
   unsigned int n = 0;
-  for (Client *c = clients; c; c = c->next)
-    if (isvisible(c) && !c->isfloating)
-      n++;
+  for (Client *c = nexttiled(clients); c; c = nexttiled(c->next))
+    n++;
   if (n == 0)
     return;
 
   int wx = 0;
-  int wy = bar_is_visible() ? barheight : 0;
+  int wy = bar_is_visible() ? (int)barheight : 0;
+  if (wy >= sh)
+    wy = sh > 1 ? sh - 1 : 0;
   int ww = sw;
-  int wh = sh - (bar_is_visible() ? barheight : 0);
+  int wh = sh - wy;
 
   int g = gappx;
+  int maxg = ((ww < wh ? ww : wh) - 1) / 2;
+  if (maxg < 0)
+    maxg = 0;
+  if (g > maxg)
+    g = maxg;
   wx += g;
   wy += g;
   ww -= 2 * g;
   wh -= 2 * g;
+  if (ww < 1)
+    ww = 1;
+  if (wh < 1)
+    wh = 1;
 
   unsigned int mcount = (n < nmaster) ? n : nmaster;
   unsigned int scount = (n > nmaster) ? (n - nmaster) : 0;
 
-  int mw = (scount > 0) ? (int)(ww * mfact) : ww;
-  if (mw < minmasterw)
-    mw = minmasterw;
-  int swidth = ww - mw;
-  if (scount > 0 && swidth < minstackw) {
-    mw = ww - minstackw;
-    if (mw < minmasterw)
-      mw = minmasterw;
-    swidth = ww - mw;
+  int mw = ww;
+  int swidth = 0;
+  int columns_overlap = 0;
+  if (mcount == 0) {
+    mw = 0;
+    swidth = ww;
+  } else if (scount > 0) {
+    int column_gap = (ww >= 3) ? g : 0;
+    int available = ww - column_gap;
+    if (available < 2) {
+      mw = ww;
+      swidth = ww;
+      g = 0;
+      columns_overlap = 1;
+    } else {
+      mw = (int)(available * mfact);
+      if (minmasterw + minstackw <= available) {
+        if (mw < minmasterw)
+          mw = minmasterw;
+        if (available - mw < minstackw)
+          mw = available - minstackw;
+      }
+      if (mw < 1)
+        mw = 1;
+      if (mw >= available)
+        mw = available - 1;
+      swidth = available - mw;
+      g = column_gap;
+    }
   }
-  if (scount > 0)
-    swidth -= g;
 
   int mx = wx;
-  int sx = wx + mw + g;
+  int sx = (mcount == 0 || columns_overlap) ? wx : wx + mw + g;
   int my = wy;
   int sy = wy;
+  int mgap = g;
+  int sgap = g;
+  if (mcount > 1 && (int)(mgap * (mcount - 1)) > wh - (int)mcount)
+    mgap = (wh > (int)mcount) ? (wh - (int)mcount) / (int)(mcount - 1) : 0;
+  if (scount > 1 && (int)(sgap * (scount - 1)) > wh - (int)scount)
+    sgap = (wh > (int)scount) ? (wh - (int)scount) / (int)(scount - 1) : 0;
 
   unsigned int i = 0;
   for (Client *c = nexttiled(clients); c; c = nexttiled(c->next), i++) {
     if (i < mcount) {
-      int mh = (wh - (int)(g * (mcount - 1))) / (int)mcount;
-      int mrem = (wh - (int)(g * (mcount - 1))) % (int)mcount;
+      int mh = (wh - (int)(mgap * (mcount - 1))) / (int)mcount;
+      int mrem = (wh - (int)(mgap * (mcount - 1))) % (int)mcount;
       int ch = mh + ((int)i == (int)mcount - 1 ? mrem : 0);
-      resize(c, mx, my, mw, ch);
-      my += ch + g;
+      resize(c, mx, my, mw - 2 * (int)borderpx, ch - 2 * (int)borderpx);
+      my += ch + mgap;
     } else {
       unsigned int si = i - mcount;
-      int shh = (wh - (int)(g * (scount - 1))) / (int)scount;
-      int srem = (wh - (int)(g * (scount - 1))) % (int)scount;
+      int shh = (wh - (int)(sgap * (scount - 1))) / (int)scount;
+      int srem = (wh - (int)(sgap * (scount - 1))) % (int)scount;
       int ch = shh + ((int)si == (int)scount - 1 ? srem : 0);
-      resize(c, sx, sy, swidth, ch);
-      sy += ch + g;
+      resize(c, sx, sy, swidth - 2 * (int)borderpx, ch - 2 * (int)borderpx);
+      sy += ch + sgap;
     }
   }
 }
@@ -762,31 +902,59 @@ static void apply_fullscreen(void) {
   }
 }
 
+static int is_transient_for_fullscreen(Client *c) {
+  Window owner = c ? c->transient_for : None;
+
+  for (unsigned int depth = 0; owner != None && depth < 32; depth++) {
+    Client *parent = wintoclient(owner);
+    if (!parent)
+      return 0;
+    if (isvisible(parent) && parent->isfullscreen)
+      return 1;
+    owner = parent->transient_for;
+  }
+  return 0;
+}
+
 static void restack(void) {
-  for (Client *c = clients; c; c = c->next) {
-    if (!isvisible(c) || c->isfullscreen || c == sel)
-      continue;
-    if (!c->isfloating)
-      XRaiseWindow(dpy, c->win);
-  }
-  if (sel && isvisible(sel) && !sel->isfullscreen && !sel->isfloating)
-    XRaiseWindow(dpy, sel->win);
-  for (Client *c = clients; c; c = c->next) {
-    if (!isvisible(c) || c->isfullscreen || c == sel)
-      continue;
-    if (c->isfloating)
-      XRaiseWindow(dpy, c->win);
-  }
-  if (sel && isvisible(sel) && !sel->isfullscreen && sel->isfloating)
-    XRaiseWindow(dpy, sel->win);
-  if (has_visible_fullscreen()) {
-    for (Client *c = clients; c; c = c->next) {
-      if (isvisible(c) && c->isfullscreen)
-        XRaiseWindow(dpy, c->win);
-    }
-  }
+  unsigned int count = (topbar && bar_is_visible()) ? 1 : 0;
+  unsigned int i = 0;
+
+  for (Client *c = stack; c; c = c->snext)
+    if (isvisible(c))
+      count++;
+  if (count == 0)
+    return;
+
+  Window *wins = calloc(count, sizeof(Window));
+  if (!wins)
+    return;
   if (topbar && bar_is_visible())
-    XRaiseWindow(dpy, barwin);
+    wins[i++] = barwin;
+  for (Client *c = stack; c; c = c->snext)
+    if (isvisible(c) && c->isabove)
+      wins[i++] = c->win;
+  for (Client *c = stack; c; c = c->snext)
+    if (isvisible(c) && !c->isabove && !c->isfullscreen
+        && is_transient_for_fullscreen(c))
+      wins[i++] = c->win;
+  for (Client *c = stack; c; c = c->snext)
+    if (isvisible(c) && !c->isabove && c->isfullscreen)
+      wins[i++] = c->win;
+  for (Client *c = stack; c; c = c->snext)
+    if (isvisible(c) && !c->isabove && !c->isfullscreen
+        && !is_transient_for_fullscreen(c) && c->isfloating)
+      wins[i++] = c->win;
+  for (Client *c = stack; c; c = c->snext)
+    if (isvisible(c) && !c->isabove && !c->isfullscreen
+        && !is_transient_for_fullscreen(c) && !c->isfloating)
+      wins[i++] = c->win;
+
+  if (i > 1)
+    XRestackWindows(dpy, wins, (int)i);
+  else
+    XRaiseWindow(dpy, wins[0]);
+  free(wins);
 }
 
 static void select_visible_focus(void) {
@@ -990,7 +1158,9 @@ static void updateclock(void) {
   char newcenter[64];
   char newright[96];
   const char *memicon = has_icon_mem ? "󰍛" : "";
-  strftime(datebuf, sizeof(datebuf), clockfmt, tm);
+  datebuf[0] = '\0';
+  if (strftime(datebuf, sizeof(datebuf), clockfmt, tm) == 0)
+    snprintf(datebuf, sizeof(datebuf), "invalid clock format");
   snprintf(newcenter, sizeof(newcenter), "%s", datebuf);
   int hasvol = getvolume(volbuf, sizeof(volbuf));
   int hasram = getusedram(membuf, sizeof(membuf));
@@ -1019,15 +1189,71 @@ static void updateclock(void) {
 }
 
 static int getvolume(char *buf, size_t buflen) {
-  FILE *fp = popen("wpctl get-volume @DEFAULT_AUDIO_SINK@", "r");
-  if (!fp)
+  int pipefd[2];
+  if (pipe(pipefd) < 0)
     return 0;
   char line[256];
-  if (!fgets(line, sizeof(line), fp)) {
-    pclose(fp);
+  pid_t pid = fork();
+  if (pid == 0) {
+    close(pipefd[0]);
+    if (dup2(pipefd[1], STDOUT_FILENO) < 0)
+      _exit(1);
+    close(pipefd[1]);
+    execlp("wpctl", "wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@", NULL);
+    _exit(1);
+  }
+  close(pipefd[1]);
+  if (pid < 0) {
+    close(pipefd[0]);
     return 0;
   }
-  pclose(fp);
+
+  size_t used = 0;
+  int pipe_open = 1;
+  int child_done = 0;
+  long long deadline = nowms() + 1000;
+  while (!child_done || pipe_open) {
+    if (!child_done && waitpid(pid, NULL, WNOHANG) == pid)
+      child_done = 1;
+    long long remaining = deadline - nowms();
+    if (!child_done && remaining <= 0) {
+      kill(pid, SIGKILL);
+      while (waitpid(pid, NULL, 0) < 0 && errno == EINTR)
+        ;
+      child_done = 1;
+    }
+
+    fd_set fds;
+    FD_ZERO(&fds);
+    if (pipe_open)
+      FD_SET(pipefd[0], &fds);
+    if (remaining < 0)
+      remaining = 0;
+    struct timeval tv = {
+      .tv_sec = child_done ? 0 : (time_t)(remaining / 1000),
+      .tv_usec = child_done ? 0 : (suseconds_t)((remaining % 1000) * 1000)
+    };
+    int ready = select(pipe_open ? pipefd[0] + 1 : 0, &fds, NULL, NULL, &tv);
+    if (pipe_open && ready > 0 && FD_ISSET(pipefd[0], &fds)) {
+      ssize_t nread = read(pipefd[0], line + used, sizeof(line) - 1 - used);
+      if (nread > 0)
+        used += (size_t)nread;
+      else if (nread == 0 || (errno != EINTR && errno != EAGAIN)) {
+        close(pipefd[0]);
+        pipe_open = 0;
+      }
+    }
+    if (child_done && ready <= 0 && pipe_open) {
+      close(pipefd[0]);
+      pipe_open = 0;
+    }
+  }
+  if (pipe_open)
+    close(pipefd[0]);
+  line[used] = '\0';
+  if (used == 0)
+    return 0;
+
   float vol = -1.0f;
   if (sscanf(line, "Volume: %f", &vol) != 1)
     return 0;
@@ -1064,6 +1290,11 @@ static void grabkeys(void) {
   XUngrabKey(dpy, AnyKey, AnyModifier, root);
   for (unsigned int i = 0; i < LENGTH(keys); i++) {
     KeyCode code = XKeysymToKeycode(dpy, keys[i].keysym);
+    if (code == 0) {
+      fprintf(stderr, "opendwm: cannot grab unmapped keysym 0x%lx\n",
+              (unsigned long)keys[i].keysym);
+      continue;
+    }
     unsigned int mods[] = { 0, LockMask, numlockmask, numlockmask|LockMask };
     for (unsigned int j = 0; j < LENGTH(mods); j++)
       XGrabKey(dpy, code, keys[i].mod | mods[j], root, True, GrabModeAsync, GrabModeAsync);
@@ -1073,6 +1304,8 @@ static void grabkeys(void) {
 static void updatenumlockmask(void) {
   numlockmask = 0;
   XModifierKeymap *modmap = XGetModifierMapping(dpy);
+  if (!modmap)
+    return;
   KeyCode numlock = XKeysymToKeycode(dpy, XK_Num_Lock);
   for (int i = 0; i < 8; i++) {
     for (int j = 0; j < modmap->max_keypermod; j++) {
@@ -1091,15 +1324,7 @@ static void keypress(XEvent *e) {
         && cleanmask(ev->state) == keys[i].mod) {
       if (keys[i].func)
         keys[i].func(&(keys[i].arg));
-      if (sym == XF86XK_AudioRaiseVolume || sym == XF86XK_AudioLowerVolume
-          || sym == XF86XK_AudioMute || sym == XF86XK_AudioPlay
-          || sym == XF86XK_AudioNext || sym == XF86XK_AudioPrev)
-        statusdirty = 1;
-      if (sym == XF86XK_AudioRaiseVolume || sym == XF86XK_AudioLowerVolume
-          || sym == XF86XK_AudioMute) {
-        status_refresh_pending = 1;
-        status_refresh_at_ms = nowms() + 100;
-      }
+      break;
     }
   }
 }
@@ -1246,23 +1471,76 @@ static void quit(const Arg *arg) {
 static void spawn(const Arg *arg) {
   if (!arg || !arg->v)
     return;
-  if (fork() == 0) {
+  pid_t pid = fork();
+  if (pid == 0) {
     if (dpy)
       close(ConnectionNumber(dpy));
     setsid();
     execvp(((char *const *)arg->v)[0], (char *const *)arg->v);
     _exit(1);
   }
+  if (pid < 0)
+    fprintf(stderr, "opendwm: fork failed: %s\n", strerror(errno));
+}
+
+static pid_t spawncommand(const void *command) {
+  pid_t pid = fork();
+
+  if (pid == 0) {
+    if (dpy)
+      close(ConnectionNumber(dpy));
+    setsid();
+    execvp(((char *const *)command)[0], (char *const *)command);
+    _exit(1);
+  }
+  if (pid < 0)
+    fprintf(stderr, "opendwm: fork failed: %s\n", strerror(errno));
+  return pid;
+}
+
+static void startserial(void) {
+  while (serial_pid < 0 && spawn_queue_count > 0) {
+    const void *command = spawn_queue[spawn_queue_head];
+    spawn_queue_head = (spawn_queue_head + 1) % SPAWN_QUEUE_SIZE;
+    spawn_queue_count--;
+    serial_pid = spawncommand(command);
+  }
+  if (serial_pid < 0 && spawn_queue_count == 0) {
+    statusdirty = 1;
+  }
+}
+
+static void spawnserial(const Arg *arg) {
+  if (!arg || !arg->v)
+    return;
+  if (spawn_queue_count == SPAWN_QUEUE_SIZE) {
+    fprintf(stderr, "opendwm: serial command queue is full\n");
+    return;
+  }
+  unsigned int tail = (spawn_queue_head + spawn_queue_count) % SPAWN_QUEUE_SIZE;
+  spawn_queue[tail] = arg->v;
+  spawn_queue_count++;
+  startserial();
+}
+
+static void reapchildren(void) {
+  int status;
+  pid_t pid;
+
+  if (!child_exited)
+    return;
+  child_exited = 0;
+  while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+    if (pid == serial_pid) {
+      serial_pid = -1;
+      startserial();
+    }
+  }
 }
 
 static void sigchld(int unused) {
-  int saved_errno = errno;
-
   (void)unused;
-  while (waitpid(-1, NULL, WNOHANG) > 0)
-    ;
-
-  errno = saved_errno;
+  child_exited = 1;
 }
 
 static void setup(void) {
@@ -1270,7 +1548,7 @@ static void setup(void) {
 
   memset(&sa, 0, sizeof(sa));
   sa.sa_handler = sigchld;
-  sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+  sa.sa_flags = SA_NOCLDSTOP;
   if (sigemptyset(&sa.sa_mask) == -1)
     die("sigemptyset failed");
   if (sigaction(SIGCHLD, &sa, NULL) == -1)
@@ -1283,6 +1561,14 @@ static void setup(void) {
   root = RootWindow(dpy, screen);
   sw = DisplayWidth(dpy, screen);
   sh = DisplayHeight(dpy, screen);
+  XSetErrorHandler(xerrorstart);
+  XSelectInput(dpy, root, SubstructureRedirectMask | SubstructureNotifyMask
+      | ButtonPressMask | PointerMotionMask | EnterWindowMask | LeaveWindowMask
+      | StructureNotifyMask | PropertyChangeMask);
+  XSync(dpy, False);
+  if (wm_detected)
+    die("another window manager is running");
+  XSetErrorHandler(xerror);
   wmatom = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
   net_wm_window_type = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE", False);
   net_wm_window_type_dialog = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_DIALOG", False);
@@ -1323,9 +1609,9 @@ static void setup(void) {
   showbar = topbar;
   bar_init();
 
-  XSelectInput(dpy, root, SubstructureRedirectMask | SubstructureNotifyMask | ButtonPressMask | PointerMotionMask | EnterWindowMask | LeaveWindowMask | StructureNotifyMask | PropertyChangeMask);
-  XGrabButton(dpy, AnyButton, AnyModifier, root, True, ButtonPressMask,
-              GrabModeSync, GrabModeAsync, None, None);
+  for (unsigned int button = Button1; button <= Button3; button++)
+    XGrabButton(dpy, button, AnyModifier, root, True, ButtonPressMask,
+                GrabModeSync, GrabModeAsync, None, None);
 
   Cursor cursor = XCreateFontCursor(dpy, XC_left_ptr);
   XDefineCursor(dpy, root, cursor);
@@ -1336,7 +1622,6 @@ static void setup(void) {
   scan();
   updateclock();
   drawbar();
-  starting = 0;
 }
 
 static void togglebar(const Arg *arg) {
@@ -1367,6 +1652,11 @@ static int window_has_state(Window w, Atom state) {
                          &actual, &format, &nitems, &bytes_after,
                          (unsigned char **)&props) != Success)
     return 0;
+  if (actual != XA_ATOM || format != 32) {
+    if (props)
+      XFree(props);
+    return 0;
+  }
   if (props) {
     for (unsigned long i = 0; i < nitems; i++) {
       if (props[i] == state) {
@@ -1389,6 +1679,11 @@ static int window_has_type(Window w, Atom type) {
                          &actual, &format, &nitems, &bytes_after,
                          (unsigned char **)&props) != Success)
     return 0;
+  if (actual != XA_ATOM || format != 32) {
+    if (props)
+      XFree(props);
+    return 0;
+  }
   if (props) {
     for (unsigned long i = 0; i < nitems; i++) {
       if (props[i] == type) {
@@ -1401,8 +1696,66 @@ static int window_has_type(Window w, Atom type) {
   return found;
 }
 
+static void setwindowstate(Window w, Atom state, int enabled) {
+  Atom actual = None;
+  int format = 0;
+  unsigned long nitems = 0;
+  unsigned long bytes_after = 0;
+  Atom *props = NULL;
+
+  if (XGetWindowProperty(dpy, w, net_wm_state, 0, 1024, False, XA_ATOM,
+                         &actual, &format, &nitems, &bytes_after,
+                         (unsigned char **)&props) != Success)
+    return;
+  if (actual != XA_ATOM || format != 32) {
+    if (props)
+      XFree(props);
+    props = NULL;
+    nitems = 0;
+  }
+
+  unsigned long found = nitems;
+  for (unsigned long i = 0; i < nitems; i++) {
+    if (props[i] == state) {
+      found = i;
+      break;
+    }
+  }
+  if ((enabled && found < nitems) || (!enabled && found == nitems)) {
+    if (props)
+      XFree(props);
+    return;
+  }
+
+  if (enabled) {
+    Atom *next = malloc((nitems + 1) * sizeof(Atom));
+    if (!next) {
+      if (props)
+        XFree(props);
+      return;
+    }
+    if (nitems > 0)
+      memcpy(next, props, nitems * sizeof(Atom));
+    next[nitems++] = state;
+    XChangeProperty(dpy, w, net_wm_state, XA_ATOM, 32, PropModeReplace,
+                    (unsigned char *)next, (int)nitems);
+    free(next);
+  } else {
+    for (unsigned long i = found + 1; i < nitems; i++)
+      props[i - 1] = props[i];
+    nitems--;
+    XChangeProperty(dpy, w, net_wm_state, XA_ATOM, 32, PropModeReplace,
+                    (unsigned char *)props, (int)nitems);
+  }
+  if (props)
+    XFree(props);
+}
+
 static void setfullscreen(Client *c, int fullscreen) {
-  if (!c || c->isfullscreen == fullscreen)
+  if (!c)
+    return;
+  setwindowstate(c->win, net_wm_state_fullscreen, fullscreen);
+  if (c->isfullscreen == fullscreen)
     return;
 
   if (fullscreen) {
@@ -1421,6 +1774,8 @@ static void setfullscreen(Client *c, int fullscreen) {
     c->y = c->oldy;
     c->w = c->oldw;
     c->h = c->oldh;
+    if (c->isfloating)
+      resize(c, c->x, c->y, c->w, c->h);
   }
   arrange();
 }
@@ -1456,19 +1811,32 @@ static void scan(void) {
 }
 
 static int xerror(Display *dpy, XErrorEvent *ee) {
-  (void)dpy;
   if (ee->error_code == BadWindow || ee->error_code == BadDrawable)
     return 0;
-  if (ee->error_code == BadAccess) {
-    if (starting && (ee->request_code == X_ChangeWindowAttributes ||
-        ee->request_code == X_GrabKey ||
-        ee->request_code == X_GrabButton))
-      die("another window manager is running");
-  }
+  char message[128];
+  XGetErrorText(dpy, ee->error_code, message, sizeof(message));
+  fprintf(stderr, "opendwm: X error: %s (request %u, minor %u)\n",
+          message, ee->request_code, ee->minor_code);
+  return 0;
+}
+
+static int xerrorstart(Display *dpy, XErrorEvent *ee) {
+  (void)dpy;
+  if (ee->error_code == BadAccess && ee->request_code == X_ChangeWindowAttributes)
+    wm_detected = 1;
   return 0;
 }
 
 static void cleanup(void) {
+  while (clients) {
+    Client *c = clients;
+    XUngrabButton(dpy, AnyButton, AnyModifier, c->win);
+    XSetWindowBorderWidth(dpy, c->win, c->oldbw);
+    XMoveWindow(dpy, c->win, c->x, c->y);
+    detach(c);
+    detachstack(c);
+    free(c);
+  }
   bar_cleanup();
   if (gc)
     XFreeGC(dpy, gc);
@@ -1540,24 +1908,45 @@ static void run(void) {
         case MapRequest: maprequest(&ev); break;
         case ButtonPress: buttonpress(&ev); break;
         case ConfigureRequest: configurerequest(&ev); break;
+        case ConfigureNotify: {
+          XConfigureEvent *cev = &ev.xconfigure;
+          if (cev->window == root && (sw != cev->width || sh != cev->height)) {
+            sw = cev->width;
+            sh = cev->height;
+            if (topbar)
+              XResizeWindow(dpy, barwin, sw, barheight);
+            arrange();
+          }
+          break;
+        }
         case ClientMessage: {
           XClientMessageEvent *cm = &ev.xclient;
           if (cm->message_type == net_wm_state) {
             Client *c = wintoclient(cm->window);
             if (c) {
-              Atom a1 = (Atom)cm->data.l[1];
-              Atom a2 = (Atom)cm->data.l[2];
-              if (a1 == net_wm_state_fullscreen || a2 == net_wm_state_fullscreen) {
-                int action = cm->data.l[0];
-                int fs = c->isfullscreen;
+              Atom states[] = { (Atom)cm->data.l[1], (Atom)cm->data.l[2] };
+              int action = cm->data.l[0];
+              for (unsigned int i = 0; i < LENGTH(states); i++) {
+                Atom state = states[i];
+                if (state == None || (i > 0 && state == states[0]))
+                  continue;
+                if (state != net_wm_state_fullscreen && state != net_wm_state_modal
+                    && state != net_wm_state_above)
+                  continue;
+                int enabled = window_has_state(c->win, state);
                 if (action == 0)
-                  fs = 0;
+                  enabled = 0;
                 else if (action == 1)
-                  fs = 1;
+                  enabled = 1;
                 else if (action == 2)
-                  fs = !fs;
-                setfullscreen(c, fs);
+                  enabled = !enabled;
+                else
+                  continue;
+                setwindowstate(c->win, state, enabled);
               }
+              setfullscreen(c, window_has_state(c->win, net_wm_state_fullscreen));
+              refreshclientrole(c, 0);
+              arrange();
             }
           }
           break;
@@ -1565,17 +1954,33 @@ static void run(void) {
         case DestroyNotify: destroynotify(&ev); break;
         case PropertyNotify: {
           XPropertyEvent *pev = &ev.xproperty;
-          if (pev->atom == net_wm_state) {
-            Client *c = wintoclient(pev->window);
-            if (c)
+          Client *c = wintoclient(pev->window);
+          if (c) {
+            if (pev->atom == XA_WM_CLASS)
+              applyrules(c);
+            if (pev->atom == net_wm_state) {
               setfullscreen(c, window_has_state(c->win, net_wm_state_fullscreen));
+              refreshclientrole(c, 0);
+              arrange();
+            } else if (pev->atom == net_wm_window_type
+                || pev->atom == XA_WM_TRANSIENT_FOR || pev->atom == XA_WM_CLASS) {
+              refreshclientrole(c, 0);
+              arrange();
+            }
           }
           break;
         }
         case UnmapNotify: unmapnotify(&ev); break;
         case KeyPress: keypress(&ev); break;
+        case MappingNotify:
+          XRefreshKeyboardMapping(&ev.xmapping);
+          grabkeys();
+          for (Client *c = clients; c; c = c->next)
+            grabbuttons(c);
+          break;
       }
     }
+    reapchildren();
     time_t now = time(NULL);
     if (now - last >= status_interval) {
       last = now;
@@ -1583,12 +1988,6 @@ static void run(void) {
     } else if (statusdirty) {
       statusdirty = 0;
       updateclock();
-    } else if (status_refresh_pending) {
-      long long ms = nowms();
-      if (ms >= status_refresh_at_ms) {
-        status_refresh_pending = 0;
-        updateclock();
-      }
     }
   }
 }

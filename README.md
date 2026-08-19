@@ -56,6 +56,23 @@ Alternatively, you can copy manually:
 cp config.def.h config.h
 ```
 
+## Testing
+
+Xephyr runs a nested, visible X server and is useful for testing OpenDWM without
+replacing the active window manager. Xvfb provides a headless X server for
+automated tests. On Arch Linux, install them with:
+
+```sh
+sudo pacman -S xorg-server-xephyr xorg-server-xvfb
+```
+
+To start a nested test session, run Xephyr and OpenDWM from separate terminals:
+
+```sh
+Xephyr :1 -screen 1280x720
+DISPLAY=:1 ./opendwm
+```
+
 ## Running
 
 Add this to your `.xinitrc` (or configure your display manager):

@@ -25,6 +25,9 @@ static const char *col_border_norm_hex = "#3b4261";
 
 /* Spawn commands */
 static const char *termcmd[] = { "xterm", NULL };
+static const char *volupcmd[] = { "wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%+", NULL };
+static const char *voldowncmd[] = { "wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%-", NULL };
+static const char *volmutecmd[] = { "wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle", NULL };
 
 /* Window matching rules: { class, isfloating } */
 static const Rule rules[] = {
@@ -67,6 +70,10 @@ static const Key keys[] = {
   { MODKEY|ShiftMask, XK_equal, incgaps, { .i = +2 } },
   { MODKEY, XK_plus, incgaps, { .i = +2 } },
   { MODKEY, XK_KP_Add, incgaps, { .i = +2 } },
+
+  { 0, XF86XK_AudioRaiseVolume, spawnserial, { .v = volupcmd } },
+  { 0, XF86XK_AudioLowerVolume, spawnserial, { .v = voldowncmd } },
+  { 0, XF86XK_AudioMute, spawnserial, { .v = volmutecmd } },
 
 };
 
