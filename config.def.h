@@ -28,6 +28,7 @@ static const char *termcmd[] = { "xterm", NULL };
 static const char *volupcmd[] = { "wpctl", "set-volume", "--limit", "1.0", "@DEFAULT_AUDIO_SINK@", "5%+", NULL };
 static const char *voldowncmd[] = { "wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%-", NULL };
 static const char *volmutecmd[] = { "wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle", NULL };
+static const char *notesmenucmd[] = { "notes-menu", NULL };
 static const char *dictationstartcmd[] = { "dictation", "start", NULL };
 static const char *dictationstopcmd[] = { "dictation", "stop", NULL };
 
@@ -62,6 +63,7 @@ static const Key keys[] = {
   { MODKEY, XK_m, setlayout, { .i = LAYOUT_MONOCLE } },
 
   { MODKEY, XK_b, togglebar, { .i = 0 } },
+  { MODKEY, XK_n, spawn, { .v = notesmenucmd } },
 
   { MODKEY, XK_h, incmfact, { .f = -0.05f } },
   { MODKEY, XK_l, incmfact, { .f = +0.05f } },

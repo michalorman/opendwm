@@ -32,6 +32,7 @@ static const char *runmenucmd[] = { "dmenu_run", "-c", "-l", "10", "-p", "drun:"
 static const char *sshotmenucmd[] = { "sshot-menu", NULL };
 static const char *powermenucmd[] = { "power-menu", NULL };
 static const char *linksmenucmd[] = { "links-menu", NULL };
+static const char *notesmenucmd[] = { "notes-menu", NULL };
 static const char *onepasswordcmd[] = { "1password", NULL };
 static const char *volupcmd[] = { "wpctl", "set-volume", "--limit", "1.0", "@DEFAULT_AUDIO_SINK@", "5%+", NULL };
 static const char *voldowncmd[] = { "wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%-", NULL };
@@ -80,6 +81,7 @@ static const Key keys[] = {
   { MODKEY|ShiftMask, XK_p, spawn, { .v = runmenucmd } },
   { MODKEY, XK_s, spawn, { .v = sshotmenucmd } },
   { MODKEY, XK_x, spawn, { .v = powermenucmd } },
+  { MODKEY, XK_n, spawn, { .v = notesmenucmd } },
   { Mod1Mask, XK_l, spawn, { .v = linksmenucmd } },
   { MODKEY|ControlMask, XK_p, spawn, { .v = onepasswordcmd } },
 
