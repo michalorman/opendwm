@@ -97,4 +97,5 @@ static const Key releasekeys[] = {
 /* Mouse bindings */
 static const Button buttons[] = {
   { MODKEY, Button1, movemouse, { .i = 0 } },
+  { MODKEY, Button3, resizemouse, { .i = 0 } },
 };

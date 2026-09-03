@@ -115,6 +115,7 @@ static void movestack(const Arg *arg);
 static void promotemaster(const Arg *arg);
 static void quit(const Arg *arg);
 static void resize(Client *c, int x, int y, int w, int h);
+static void resizemouse(const Arg *arg);
 static void refreshclientrole(Client *c, int initial);
 static void run(void);
 static void select_visible_focus(void);
@@ -139,6 +140,8 @@ static void unmanage(Client *c, int destroyed);
 static void unmapnotify(XEvent *e);
 static void updatenumlockmask(void);
 static void updateclock(void);
+static void updatecursor(Client *c, unsigned int state, int x, int y);
+static void updatecursorfrompointer(void);
 static void update_bar_visibility(void);
 static int getusedram(char *buf, size_t buflen);
 static int getvolume(char *buf, size_t buflen);
@@ -165,6 +168,7 @@ static int xerrorstart(Display *dpy, XErrorEvent *ee);
 #define SCRATCHTAG (1u << LENGTH(tags))
 #define SPAWN_QUEUE_SIZE 64
 #define MOUSEMASK (ButtonPressMask|ButtonReleaseMask|PointerMotionMask)
+#define RESIZE_GRIP_SIZE 12
 #define TAGKEYS(KEYSYM, TAG) \
   { MODKEY, KEYSYM, view, { .ui = 1u << (TAG) } }, \
   { MODKEY|ShiftMask, KEYSYM, tagandview, { .ui = 1u << (TAG) } }
@@ -184,6 +188,9 @@ static Display *dpy;
 static int screen;
 static Window root;
 static Window barwin;
+static Window resizecursorwin;
+static Cursor cursor;
+static Cursor resizecursor;
 static GC gc;
 static XftFont *xftfont;
 static XftDraw *xftdraw;
@@ -475,6 +482,45 @@ static unsigned int cleanmask(unsigned int mask) {
   return mask & ~(numlockmask|LockMask);
 }
 
+static int canresize(Client *c, unsigned int state, int x, int y) {
+  return c && c->isfloating && !c->isfullscreen
+      && (cleanmask(state) & MODKEY)
+      && x >= c->w - RESIZE_GRIP_SIZE
+      && y >= c->h - RESIZE_GRIP_SIZE;
+}
+
+static void updatecursor(Client *c, unsigned int state, int x, int y) {
+  if (c && canresize(c, state, x, y)) {
+    if (resizecursorwin == c->win)
+      return;
+    if (resizecursorwin != None)
+      XUndefineCursor(dpy, resizecursorwin);
+    XDefineCursor(dpy, c->win, resizecursor);
+    resizecursorwin = c->win;
+  } else if (resizecursorwin != None) {
+    XUndefineCursor(dpy, resizecursorwin);
+    resizecursorwin = None;
+  }
+}
+
+static void updatecursorfrompointer(void) {
+  Window dummy, child;
+  int xroot, yroot, dummy_i;
+  int x, y;
+  unsigned int state;
+
+  if (!XQueryPointer(dpy, root, &dummy, &child, &xroot, &yroot,
+                     &dummy_i, &dummy_i, &state))
+    return;
+  Client *c = wintoclient(child);
+  if (!c || !XTranslateCoordinates(dpy, root, c->win, xroot, yroot,
+                                   &x, &y, &dummy)) {
+    updatecursor(NULL, state, 0, 0);
+    return;
+  }
+  updatecursor(c, state, x, y);
+}
+
 static Client *nexttiled(Client *c) {
   for (; c && (!isvisible(c) || c->isfloating || c->isfullscreen); c = c->next) {
   }
@@ -645,7 +691,8 @@ static void manage(Window w, XWindowAttributes *wa) {
   }
   attach(c);
   attachstack(c);
-  XSelectInput(dpy, w, ButtonPressMask | EnterWindowMask | FocusChangeMask | PropertyChangeMask | StructureNotifyMask);
+  XSelectInput(dpy, w, ButtonPressMask | EnterWindowMask | FocusChangeMask
+      | PropertyChangeMask | StructureNotifyMask);
   grabbuttons(c);
   XSetWindowBorderWidth(dpy, w, (c->isfullscreen
       || (layout == LAYOUT_MONOCLE && !c->isfloating)) ? 0 : borderpx);
@@ -659,6 +706,10 @@ static void manage(Window w, XWindowAttributes *wa) {
 static void unmanage(Client *c, int destroyed) {
   if (!c)
     return;
+  if (resizecursorwin == c->win) {
+    XUndefineCursor(dpy, c->win);
+    resizecursorwin = None;
+  }
   if (c->scratchpad >= 0 && scratchpad_clients[c->scratchpad] == c)
     scratchpad_clients[c->scratchpad] = NULL;
   Client *focus_c = NULL;
@@ -942,6 +993,42 @@ static void movemouse(const Arg *arg) {
     if (ev.type == MotionNotify) {
       resize(c, startx + ev.xmotion.x_root - xroot,
              starty + ev.xmotion.y_root - yroot, c->w, c->h);
+    } else if (ev.type == ButtonRelease) {
+      break;
+    }
+  }
+  XUngrabPointer(dpy, CurrentTime);
+  restack();
+}
+
+static void resizemouse(const Arg *arg) {
+  (void)arg;
+  if (!sel || !sel->isfloating || sel->isfullscreen)
+    return;
+
+  Client *c = sel;
+  Window dummy, child;
+  int startw = c->w;
+  int starth = c->h;
+  int xroot, yroot, xwin, ywin;
+  unsigned int dummy_ui;
+
+  if (!XQueryPointer(dpy, c->win, &dummy, &child, &xroot, &yroot,
+                     &xwin, &ywin, &dummy_ui))
+    return;
+  if (!canresize(c, dummy_ui, xwin, ywin))
+    return;
+  updatecursor(c, dummy_ui, xwin, ywin);
+  if (XGrabPointer(dpy, root, False, MOUSEMASK, GrabModeAsync, GrabModeAsync,
+                   None, None, CurrentTime) != GrabSuccess)
+    return;
+
+  for (;;) {
+    XEvent ev;
+    XMaskEvent(dpy, MOUSEMASK, &ev);
+    if (ev.type == MotionNotify) {
+      resize(c, c->x, c->y, startw + ev.xmotion.x_root - xroot,
+             starth + ev.xmotion.y_root - yroot);
     } else if (ev.type == ButtonRelease) {
       break;
     }
@@ -1879,7 +1966,8 @@ static void setup(void) {
     XGrabButton(dpy, button, AnyModifier, root, True, ButtonPressMask,
                 GrabModeSync, GrabModeAsync, None, None);
 
-  Cursor cursor = XCreateFontCursor(dpy, XC_left_ptr);
+  cursor = XCreateFontCursor(dpy, XC_left_ptr);
+  resizecursor = XCreateFontCursor(dpy, XC_bottom_right_corner);
   XDefineCursor(dpy, root, cursor);
   if (topbar)
     XDefineCursor(dpy, barwin, cursor);
@@ -2132,6 +2220,10 @@ static void cleanup(void) {
     free(c);
   }
   bar_cleanup();
+  if (resizecursor)
+    XFreeCursor(dpy, resizecursor);
+  if (cursor)
+    XFreeCursor(dpy, cursor);
   if (gc)
     XFreeGC(dpy, gc);
   XCloseDisplay(dpy);
@@ -2290,6 +2382,7 @@ static void run(void) {
         }
       }
     }
+    updatecursorfrompointer();
     reapchildren();
     time_t now = time(NULL);
     if (now - last >= status_interval) {
