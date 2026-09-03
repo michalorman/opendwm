@@ -8,6 +8,7 @@ simple layouts, and a source-configurable workflow inspired by dwm.
 - Minimal, readable C code
 - Configurable keybindings and commands via a header file
 - Built-in status bar with clock and system info
+- Floating scratchpads that stay running while hidden
 
 ## Dependencies
 - X11 development headers
@@ -55,6 +56,22 @@ Alternatively, you can copy manually:
 ```sh
 cp config.def.h config.h
 ```
+
+### Scratchpads
+
+Scratchpads are configured with a unique X11 class and instance plus the command
+that creates the window. The first press of a scratchpad binding launches and
+shows its command; later presses hide or show that same window. Hidden
+scratchpads are moved off-screen rather than closed, so their processes continue
+to run. They are floating, start centered at the terminal's configured size, and
+can be moved with `Mod+Button1`.
+
+The local example defines these bindings:
+
+- `Mod+Shift+u`: Alacritty running `cliamp`
+- `Mod+Shift+i`: an Alacritty shell
+
+Each scratchpad's class and instance must match the command that launches it.
 
 ## Testing
 

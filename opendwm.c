@@ -45,6 +45,12 @@ typedef struct {
   int isfloating;
 } Rule;
 
+typedef struct {
+  const char *class;
+  const char *instance;
+  const char *const *command;
+} Scratchpad;
+
 typedef struct Client Client;
 struct Client {
   Window win;
@@ -61,6 +67,8 @@ struct Client {
   int isfullscreen;
   int isdialog;
   int isabove;
+  int scratchpad;
+  int scratchshown;
   Client *next;
   Client *prev;
   Client *snext;
@@ -122,9 +130,11 @@ static void setup(void);
 static void spawn(const Arg *arg);
 static void startserial(void);
 static void reapchildren(void);
+static int scratchpad_index(Window w);
 static int tag_index_from_mask(unsigned int mask);
 static void tile(void);
 static void togglebar(const Arg *arg);
+static void togglescratchpad(const Arg *arg);
 static void unmanage(Client *c, int destroyed);
 static void unmapnotify(XEvent *e);
 static void updatenumlockmask(void);
@@ -152,6 +162,7 @@ static int xerrorstart(Display *dpy, XErrorEvent *ee);
 
 #define TAGMASK ((1u << 10) - 1)
 #define LENGTH(X) (sizeof(X) / sizeof((X)[0]))
+#define SCRATCHTAG (1u << LENGTH(tags))
 #define SPAWN_QUEUE_SIZE 64
 #define MOUSEMASK (ButtonPressMask|ButtonReleaseMask|PointerMotionMask)
 #define TAGKEYS(KEYSYM, TAG) \
@@ -228,6 +239,7 @@ static pid_t serial_pid = -1;
 static const void *spawn_queue[SPAWN_QUEUE_SIZE];
 static unsigned int spawn_queue_head = 0;
 static unsigned int spawn_queue_count = 0;
+static Client *scratchpad_clients[LENGTH(scratchpads)] = { NULL };
 
 static void die(const char *msg) {
   fprintf(stderr, "opendwm: %s\n", msg);
@@ -366,8 +378,10 @@ static void synctransienttags(void) {
     int changed = 0;
     for (Client *c = clients; c; c = c->next) {
       Client *parent = wintoclient(c->transient_for);
-      if (parent && c->tags != parent->tags) {
+      if (parent && (c->tags != parent->tags
+          || c->scratchpad != parent->scratchpad)) {
         c->tags = parent->tags;
+        c->scratchpad = parent->scratchpad;
         changed = 1;
       }
     }
@@ -393,16 +407,17 @@ static void refreshclientrole(Client *c, int initial) {
   c->transient_for = transient;
   c->isdialog = isdialog;
   c->isabove = isabove;
-  if (c->isfullscreen)
-    c->oldisfloating = c->rulefloating || isdialog || isabove;
-  else
-    c->isfloating = c->rulefloating || isdialog || isabove;
-
   if (transient != None) {
     Client *parent = wintoclient(transient);
-    if (parent && (initial || c->tags != parent->tags))
+    if (parent) {
       c->tags = parent->tags;
+      c->scratchpad = parent->scratchpad;
+    }
   }
+  if (c->isfullscreen)
+    c->oldisfloating = c->rulefloating || c->scratchpad >= 0 || isdialog || isabove;
+  else
+    c->isfloating = c->rulefloating || c->scratchpad >= 0 || isdialog || isabove;
   if (!initial)
     synctransienttags();
 
@@ -421,6 +436,10 @@ static void refreshclientrole(Client *c, int initial) {
 }
 
 static int isvisible(Client *c) {
+  if (c->scratchpad >= 0) {
+    Client *scratchpad = scratchpad_clients[c->scratchpad];
+    return scratchpad && scratchpad->scratchshown;
+  }
   return c->tags & tagset;
 }
 
@@ -532,7 +551,7 @@ static void focus(Client *c) {
       continue;
     if (it->isfullscreen) {
       XSetWindowBorderWidth(dpy, it->win, 0);
-    } else if (layout == LAYOUT_MONOCLE) {
+    } else if (layout == LAYOUT_MONOCLE && !it->isfloating) {
       XSetWindowBorderWidth(dpy, it->win, 0);
     } else {
       XSetWindowBorderWidth(dpy, it->win, borderpx);
@@ -560,7 +579,8 @@ static void configure(Client *c) {
   ce.y = c->y;
   ce.width = c->w;
   ce.height = c->h;
-  ce.border_width = (layout == LAYOUT_MONOCLE || c->isfullscreen) ? 0 : borderpx;
+  ce.border_width = (c->isfullscreen
+      || (layout == LAYOUT_MONOCLE && !c->isfloating)) ? 0 : borderpx;
   ce.above = None;
   ce.override_redirect = False;
   XSendEvent(dpy, c->win, False, StructureNotifyMask, (XEvent *)&ce);
@@ -598,8 +618,15 @@ static void manage(Window w, XWindowAttributes *wa) {
   c->oldw = c->w;
   c->oldh = c->h;
   c->oldbw = wa->border_width;
+  c->scratchpad = -1;
   c->tags = tagset;
   applyrules(c);
+  c->scratchpad = scratchpad_index(w);
+  if (c->scratchpad >= 0) {
+    c->tags = SCRATCHTAG;
+    c->scratchshown = 1;
+    scratchpad_clients[c->scratchpad] = c;
+  }
   c->isfullscreen = window_has_state(w, net_wm_state_fullscreen);
   refreshclientrole(c, 1);
   if (!c->isfullscreen)
@@ -620,7 +647,8 @@ static void manage(Window w, XWindowAttributes *wa) {
   attachstack(c);
   XSelectInput(dpy, w, ButtonPressMask | EnterWindowMask | FocusChangeMask | PropertyChangeMask | StructureNotifyMask);
   grabbuttons(c);
-  XSetWindowBorderWidth(dpy, w, (layout == LAYOUT_MONOCLE || c->isfullscreen) ? 0 : borderpx);
+  XSetWindowBorderWidth(dpy, w, (c->isfullscreen
+      || (layout == LAYOUT_MONOCLE && !c->isfloating)) ? 0 : borderpx);
   XSetWindowBorder(dpy, w, col_border_norm);
   XMapWindow(dpy, w);
   c->ismapped = 1;
@@ -631,6 +659,8 @@ static void manage(Window w, XWindowAttributes *wa) {
 static void unmanage(Client *c, int destroyed) {
   if (!c)
     return;
+  if (c->scratchpad >= 0 && scratchpad_clients[c->scratchpad] == c)
+    scratchpad_clients[c->scratchpad] = NULL;
   Client *focus_c = NULL;
   if (sel == c) {
     Client *parent = wintoclient(c->transient_for);
@@ -772,7 +802,7 @@ static void view(const Arg *arg) {
 static void tagandview(const Arg *arg) {
   if ((arg->ui & TAGMASK) == 0)
     return;
-  if (sel) {
+  if (sel && sel->scratchpad < 0) {
     sel->tags = arg->ui & TAGMASK;
     synctransienttags();
   }
@@ -1566,6 +1596,26 @@ static void killclient(const Arg *arg) {
   XKillClient(dpy, sel->win);
 }
 
+static void togglescratchpad(const Arg *arg) {
+  if (!arg || arg->ui >= LENGTH(scratchpads))
+    return;
+  if (!scratchpads[arg->ui].command)
+    return;
+
+  Client *c = scratchpad_clients[arg->ui];
+  if (!c || !client_in_list(c)) {
+    Arg command = { .v = scratchpads[arg->ui].command };
+    scratchpad_clients[arg->ui] = NULL;
+    spawn(&command);
+    return;
+  }
+
+  c->scratchshown = !c->scratchshown;
+  arrange();
+  if (c->scratchshown)
+    focus(c);
+}
+
 static void promotemaster(const Arg *arg) {
   (void)arg;
   if (!sel || sel->isfloating || sel == clients)
@@ -1912,6 +1962,27 @@ static int window_has_type(Window w, Atom type) {
     XFree(props);
   }
   return found;
+}
+
+static int scratchpad_index(Window w) {
+  XClassHint ch = {0};
+  int index = -1;
+
+  if (!XGetClassHint(dpy, w, &ch))
+    return -1;
+  for (unsigned int i = 0; i < LENGTH(scratchpads); i++) {
+    if (ch.res_class && ch.res_name
+        && strcmp(scratchpads[i].class, ch.res_class) == 0
+        && strcmp(scratchpads[i].instance, ch.res_name) == 0) {
+      index = (int)i;
+      break;
+    }
+  }
+  if (ch.res_class)
+    XFree(ch.res_class);
+  if (ch.res_name)
+    XFree(ch.res_name);
+  return index;
 }
 
 static void setwindowstate(Window w, Atom state, int enabled) {

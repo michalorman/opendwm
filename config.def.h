@@ -31,6 +31,12 @@ static const char *volmutecmd[] = { "wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@",
 static const char *notesmenucmd[] = { "notes-menu", NULL };
 static const char *dictationstartcmd[] = { "dictation", "start", NULL };
 static const char *dictationstopcmd[] = { "dictation", "stop", NULL };
+static const char *scratchtermcmd[] = { "xterm", "-name", "opendwm-scratch-terminal", NULL };
+
+/* Scratchpads: { X11 class, X11 instance, command } */
+static const Scratchpad scratchpads[] = {
+  { "XTerm", "opendwm-scratch-terminal", scratchtermcmd },
+};
 
 /* Window matching rules: { class, isfloating } */
 static const Rule rules[] = {
@@ -64,6 +70,7 @@ static const Key keys[] = {
 
   { MODKEY, XK_b, togglebar, { .i = 0 } },
   { MODKEY, XK_n, spawn, { .v = notesmenucmd } },
+  { MODKEY|ShiftMask, XK_i, togglescratchpad, { .ui = 0 } },
 
   { MODKEY, XK_h, incmfact, { .f = -0.05f } },
   { MODKEY, XK_l, incmfact, { .f = +0.05f } },

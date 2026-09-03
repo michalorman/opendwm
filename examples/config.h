@@ -42,6 +42,14 @@ static const char *nextcmd[] = { "playerctl", "next", NULL };
 static const char *prevcmd[] = { "playerctl", "previous", NULL };
 static const char *dictationstartcmd[] = { "dictation", "start", NULL };
 static const char *dictationstopcmd[] = { "dictation", "stop", NULL };
+static const char *cliampcmd[] = { "alacritty", "--class", "Alacritty,opendwm-cliamp", "-e", "cliamp", NULL };
+static const char *scratchtermcmd[] = { "alacritty", "--class", "Alacritty,opendwm-scratch-terminal", NULL };
+
+/* Scratchpads: { X11 class, X11 instance, command } */
+static const Scratchpad scratchpads[] = {
+  { "Alacritty", "opendwm-cliamp", cliampcmd },
+  { "Alacritty", "opendwm-scratch-terminal", scratchtermcmd },
+};
 
 /* Window matching rules: { class, isfloating } */
 static const Rule rules[] = {
@@ -84,6 +92,8 @@ static const Key keys[] = {
   { MODKEY, XK_n, spawn, { .v = notesmenucmd } },
   { Mod1Mask, XK_l, spawn, { .v = linksmenucmd } },
   { MODKEY|ControlMask, XK_p, spawn, { .v = onepasswordcmd } },
+  { MODKEY|ShiftMask, XK_u, togglescratchpad, { .ui = 0 } },
+  { MODKEY|ShiftMask, XK_i, togglescratchpad, { .ui = 1 } },
 
   { MODKEY, XK_h, incmfact, { .f = -0.05f } },
   { MODKEY, XK_l, incmfact, { .f = +0.05f } },
