@@ -25,9 +25,11 @@ static const char *col_border_norm_hex = "#3b4261";
 
 /* Spawn commands */
 static const char *termcmd[] = { "xterm", NULL };
-static const char *volupcmd[] = { "wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%+", NULL };
+static const char *volupcmd[] = { "wpctl", "set-volume", "--limit", "1.0", "@DEFAULT_AUDIO_SINK@", "5%+", NULL };
 static const char *voldowncmd[] = { "wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%-", NULL };
 static const char *volmutecmd[] = { "wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle", NULL };
+static const char *dictationstartcmd[] = { "dictation", "start", NULL };
+static const char *dictationstopcmd[] = { "dictation", "stop", NULL };
 
 /* Window matching rules: { class, isfloating } */
 static const Rule rules[] = {
@@ -74,7 +76,13 @@ static const Key keys[] = {
   { 0, XF86XK_AudioRaiseVolume, spawnserial, { .v = volupcmd } },
   { 0, XF86XK_AudioLowerVolume, spawnserial, { .v = voldowncmd } },
   { 0, XF86XK_AudioMute, spawnserial, { .v = volmutecmd } },
+  { 0, XK_F9, spawn, { .v = dictationstartcmd } },
 
+};
+
+/* Key release bindings */
+static const Key releasekeys[] = {
+  { 0, XK_F9, spawn, { .v = dictationstopcmd } },
 };
 
 /* Mouse bindings */

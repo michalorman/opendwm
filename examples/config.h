@@ -33,12 +33,14 @@ static const char *sshotmenucmd[] = { "sshot-menu", NULL };
 static const char *powermenucmd[] = { "power-menu", NULL };
 static const char *linksmenucmd[] = { "links-menu", NULL };
 static const char *onepasswordcmd[] = { "1password", NULL };
-static const char *volupcmd[] = { "wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%+", NULL };
+static const char *volupcmd[] = { "wpctl", "set-volume", "--limit", "1.0", "@DEFAULT_AUDIO_SINK@", "5%+", NULL };
 static const char *voldowncmd[] = { "wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%-", NULL };
 static const char *volmutecmd[] = { "wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle", NULL };
 static const char *playpausecmd[] = { "playerctl", "play-pause", NULL };
 static const char *nextcmd[] = { "playerctl", "next", NULL };
 static const char *prevcmd[] = { "playerctl", "previous", NULL };
+static const char *dictationstartcmd[] = { "dictation", "start", NULL };
+static const char *dictationstopcmd[] = { "dictation", "stop", NULL };
 
 /* Window matching rules: { class, isfloating } */
 static const Rule rules[] = {
@@ -97,7 +99,13 @@ static const Key keys[] = {
   { 0, XF86XK_AudioPlay, spawn, { .v = playpausecmd } },
   { 0, XF86XK_AudioNext, spawn, { .v = nextcmd } },
   { 0, XF86XK_AudioPrev, spawn, { .v = prevcmd } },
+  { 0, XK_F9, spawn, { .v = dictationstartcmd } },
 
+};
+
+/* Key release bindings */
+static const Key releasekeys[] = {
+  { 0, XK_F9, spawn, { .v = dictationstopcmd } },
 };
 
 /* Mouse bindings */

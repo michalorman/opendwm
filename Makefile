@@ -11,8 +11,8 @@ SRC = opendwm.c
 all: $(BIN)
 
 
-config.h: config.def.h
-	@test -f $@ || cp $< $@
+config.h:
+	cp config.def.h $@
 
 $(BIN): $(SRC) config.h
 	$(CC) $(CFLAGS) -o $(BIN) $(SRC) $(LDFLAGS)

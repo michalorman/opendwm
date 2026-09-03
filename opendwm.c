@@ -9,11 +9,12 @@
 #include <X11/Xutil.h>
 #include <X11/XF86keysym.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <signal.h>
 #include <string.h>
-#include <sys/select.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -84,6 +85,7 @@ static void detach(Client *c);
 static void detachstack(Client *c);
 static void drawbar(void);
 static void focus(Client *c);
+static void focusin(XEvent *e);
 static void focusstack(const Arg *arg);
 static int has_visible_fullscreen(void);
 static int is_transient_for_fullscreen(Client *c);
@@ -93,7 +95,7 @@ static void grabbuttons(Client *c);
 static void grabkeys(void);
 static void incmfact(const Arg *arg);
 static void incgaps(const Arg *arg);
-static void keypress(XEvent *e);
+static void keyevent(XEvent *e);
 static void killclient(const Arg *arg);
 static void manage(Window w, XWindowAttributes *wa);
 static void showhide(Client *c);
@@ -109,6 +111,8 @@ static void refreshclientrole(Client *c, int initial);
 static void run(void);
 static void select_visible_focus(void);
 static void scan(void);
+static int sendevent(Client *c, Atom protocol);
+static void setclientfocus(Client *c);
 static void setlayout(const Arg *arg);
 static void setfullscreen(Client *c, int fullscreen);
 static void setwindowstate(Window w, Atom state, int enabled);
@@ -128,6 +132,9 @@ static void updateclock(void);
 static void update_bar_visibility(void);
 static int getusedram(char *buf, size_t buflen);
 static int getvolume(char *buf, size_t buflen);
+static void readvoxtypestatus(void);
+static void startvoxtypestatus(void);
+static void stopvoxtypestatus(void);
 static int textwidth(const char *text);
 static long long nowms(void);
 static void view(const Arg *arg);
@@ -154,6 +161,7 @@ static int xerrorstart(Display *dpy, XErrorEvent *ee);
 static const char *tags[] = { "1", "2", "3", "4", "5", "6", "7", "8", "9", "0" };
 
 enum { LAYOUT_TILE, LAYOUT_MONOCLE };
+enum { VOXTYPE_STOPPED, VOXTYPE_IDLE, VOXTYPE_RECORDING, VOXTYPE_TRANSCRIBING };
 
 #if __has_include("config.h")
 #include "config.h"
@@ -171,12 +179,15 @@ static XftDraw *xftdraw;
 static XftColor xftcol_fg;
 static XftColor xftcol_bg;
 static XftColor xftcol_accent;
+static XftColor xftcol_dim;
 static unsigned long col_bg;
 static unsigned long col_fg;
 static unsigned long col_accent;
 static unsigned long col_border_focus;
 static unsigned long col_border_norm;
-static Atom wmatom;
+static Atom wm_delete;
+static Atom wm_protocols;
+static Atom wm_take_focus;
 static Atom net_wm_window_type;
 static Atom net_wm_window_type_dialog;
 static Atom net_wm_window_type_utility;
@@ -206,6 +217,12 @@ static char righttext[96] = {0};
 static int has_icon_vol = 0;
 static int has_icon_mute = 0;
 static int has_icon_mem = 0;
+static int has_icon_voxtype = 0;
+static int voxtype_state = VOXTYPE_STOPPED;
+static int voxtype_fd = -1;
+static pid_t voxtype_pid = -1;
+static char voxtype_statusbuf[64];
+static size_t voxtype_statusbuf_used = 0;
 static volatile sig_atomic_t child_exited = 0;
 static pid_t serial_pid = -1;
 static const void *spawn_queue[SPAWN_QUEUE_SIZE];
@@ -469,9 +486,32 @@ static void movefocus(Client *c) {
   focus(c);
 }
 
+static void setclientfocus(Client *c) {
+  int accepts_input = 1;
+  XWMHints *wmh = XGetWMHints(dpy, c->win);
+
+  if (wmh) {
+    if (wmh->flags & InputHint)
+      accepts_input = wmh->input;
+    XFree(wmh);
+  }
+  if (accepts_input)
+    XSetInputFocus(dpy, c->win, RevertToPointerRoot, CurrentTime);
+  if (!sendevent(c, wm_take_focus) && !accepts_input)
+    XSetInputFocus(dpy, root, RevertToPointerRoot, CurrentTime);
+}
+
 static void focus(Client *c) {
   if (!c || !isvisible(c))
     return;
+  if (!c->isfullscreen && !c->isabove && !is_transient_for_fullscreen(c)) {
+    for (Client *it = stack; it; it = it->snext) {
+      if (isvisible(it) && it->isfullscreen) {
+        c = it;
+        break;
+      }
+    }
+  }
   XWindowAttributes wa;
   if (!XGetWindowAttributes(dpy, c->win, &wa) || wa.map_state != IsViewable)
     return;
@@ -486,7 +526,7 @@ static void focus(Client *c) {
         tagfocus[i] = c;
     }
   }
-  XSetInputFocus(dpy, c->win, RevertToPointerRoot, CurrentTime);
+  setclientfocus(c);
   for (Client *it = clients; it; it = it->next) {
     if (!isvisible(it))
       continue;
@@ -501,6 +541,13 @@ static void focus(Client *c) {
   }
   drawbar();
   restack();
+}
+
+static void focusin(XEvent *e) {
+  XFocusChangeEvent *ev = &e->xfocus;
+
+  if (sel && ev->window != sel->win)
+    setclientfocus(sel);
 }
 
 static void configure(Client *c) {
@@ -605,6 +652,8 @@ static void unmanage(Client *c, int destroyed) {
   }
   if (!destroyed) {
     XGrabServer(dpy);
+    XUngrabButton(dpy, AnyButton, AnyModifier, c->win);
+    XSelectInput(dpy, c->win, NoEventMask);
     XSetWindowBorderWidth(dpy, c->win, c->oldbw);
     XUngrabServer(dpy);
   }
@@ -1037,12 +1086,48 @@ static void drawbar(void) {
                     (const FcChar8 *)layouttxt, (int)strlen(layouttxt));
   x += lw + lpad * 2;
 
-  int rightwidth = textwidth(righttext);
+  const char *voxtypetext = NULL;
+  XftColor *voxtypecolor = &xftcol_accent;
+  const char *voxtype_idle = has_icon_voxtype ? "" : "[MIC]";
+  const char *voxtype_recording = has_icon_voxtype ? "" : "[REC]";
+  const char *voxtype_transcribing = has_icon_voxtype ? "" : "[...]";
+  if (voxtype_state == VOXTYPE_IDLE) {
+    voxtypetext = voxtype_idle;
+    voxtypecolor = &xftcol_dim;
+  } else if (voxtype_state == VOXTYPE_RECORDING) {
+    voxtypetext = voxtype_recording;
+  } else if (voxtype_state == VOXTYPE_TRANSCRIBING) {
+    voxtypetext = voxtype_transcribing;
+  }
+
+  int statustextwidth = textwidth(righttext);
+  int voxtypeslotwidth = 0;
+  int voxtypegap = 0;
+  if (voxtypetext) {
+    voxtypeslotwidth = textwidth(voxtype_idle);
+    int w = textwidth(voxtype_recording);
+    if (w > voxtypeslotwidth)
+      voxtypeslotwidth = w;
+    w = textwidth(voxtype_transcribing);
+    if (w > voxtypeslotwidth)
+      voxtypeslotwidth = w;
+    if (statustextwidth > 0)
+      voxtypegap = textwidth("  ");
+  }
+  int rightwidth = voxtypeslotwidth + voxtypegap + statustextwidth;
   int rightx = sw - rightwidth - 10;
   if (rightx < x)
     rightx = x + 10;
-  if (rightwidth > 0) {
-    XftDrawStringUtf8(xftdraw, &xftcol_fg, xftfont, rightx,
+  if (voxtypetext) {
+    int voxtypewidth = textwidth(voxtypetext);
+    int voxtypex = rightx + (voxtypeslotwidth - voxtypewidth) / 2;
+    XftDrawStringUtf8(xftdraw, voxtypecolor, xftfont, voxtypex,
+                      (barheight + xftfont->ascent - xftfont->descent) / 2,
+                      (const FcChar8 *)voxtypetext, (int)strlen(voxtypetext));
+  }
+  if (statustextwidth > 0) {
+    int statusx = rightx + voxtypeslotwidth + voxtypegap;
+    XftDrawStringUtf8(xftdraw, &xftcol_fg, xftfont, statusx,
                       (barheight + xftfont->ascent - xftfont->descent) / 2,
                       (const FcChar8 *)righttext, (int)strlen(righttext));
   }
@@ -1196,6 +1281,8 @@ static int getvolume(char *buf, size_t buflen) {
   pid_t pid = fork();
   if (pid == 0) {
     close(pipefd[0]);
+    if (dpy)
+      close(ConnectionNumber(dpy));
     if (dup2(pipefd[1], STDOUT_FILENO) < 0)
       _exit(1);
     close(pipefd[1]);
@@ -1223,18 +1310,15 @@ static int getvolume(char *buf, size_t buflen) {
       child_done = 1;
     }
 
-    fd_set fds;
-    FD_ZERO(&fds);
-    if (pipe_open)
-      FD_SET(pipefd[0], &fds);
     if (remaining < 0)
       remaining = 0;
-    struct timeval tv = {
-      .tv_sec = child_done ? 0 : (time_t)(remaining / 1000),
-      .tv_usec = child_done ? 0 : (suseconds_t)((remaining % 1000) * 1000)
+    struct pollfd pfd = {
+      .fd = pipefd[0],
+      .events = POLLIN
     };
-    int ready = select(pipe_open ? pipefd[0] + 1 : 0, &fds, NULL, NULL, &tv);
-    if (pipe_open && ready > 0 && FD_ISSET(pipefd[0], &fds)) {
+    int ready = poll(pipe_open ? &pfd : NULL, pipe_open ? 1 : 0,
+                     child_done ? 0 : (int)remaining);
+    if (pipe_open && ready > 0 && (pfd.revents & (POLLIN | POLLHUP))) {
       ssize_t nread = read(pipefd[0], line + used, sizeof(line) - 1 - used);
       if (nread > 0)
         used += (size_t)nread;
@@ -1242,6 +1326,10 @@ static int getvolume(char *buf, size_t buflen) {
         close(pipefd[0]);
         pipe_open = 0;
       }
+    }
+    if (pipe_open && ready > 0 && (pfd.revents & (POLLERR | POLLNVAL))) {
+      close(pipefd[0]);
+      pipe_open = 0;
     }
     if (child_done && ready <= 0 && pipe_open) {
       close(pipefd[0]);
@@ -1272,6 +1360,90 @@ static int getvolume(char *buf, size_t buflen) {
   return 1;
 }
 
+static void setvoxtypestatus(const char *status) {
+  int state = VOXTYPE_STOPPED;
+
+  if (strcmp(status, "idle") == 0)
+    state = VOXTYPE_IDLE;
+  else if (strcmp(status, "recording") == 0)
+    state = VOXTYPE_RECORDING;
+  else if (strcmp(status, "transcribing") == 0)
+    state = VOXTYPE_TRANSCRIBING;
+  if (state != voxtype_state) {
+    voxtype_state = state;
+    drawbar();
+  }
+}
+
+static void stopvoxtypestatus(void) {
+  if (voxtype_fd >= 0) {
+    close(voxtype_fd);
+    voxtype_fd = -1;
+  }
+  if (voxtype_pid > 0)
+    kill(voxtype_pid, SIGTERM);
+  voxtype_statusbuf_used = 0;
+  setvoxtypestatus("stopped");
+}
+
+static void readvoxtypestatus(void) {
+  char buf[64];
+  ssize_t nread = read(voxtype_fd, buf, sizeof(buf));
+
+  if (nread <= 0) {
+    if (nread == 0 || (errno != EINTR && errno != EAGAIN))
+      stopvoxtypestatus();
+    return;
+  }
+  for (ssize_t i = 0; i < nread; i++) {
+    if (buf[i] == '\n') {
+      if (voxtype_statusbuf_used > 0
+          && voxtype_statusbuf[voxtype_statusbuf_used - 1] == '\r')
+        voxtype_statusbuf_used--;
+      voxtype_statusbuf[voxtype_statusbuf_used] = '\0';
+      setvoxtypestatus(voxtype_statusbuf);
+      voxtype_statusbuf_used = 0;
+    } else if (voxtype_statusbuf_used + 1 < sizeof(voxtype_statusbuf)) {
+      voxtype_statusbuf[voxtype_statusbuf_used++] = buf[i];
+    } else {
+      voxtype_statusbuf_used = 0;
+    }
+  }
+}
+
+static void startvoxtypestatus(void) {
+  int pipefd[2];
+
+  if (pipe(pipefd) < 0)
+    return;
+  int flags = fcntl(pipefd[0], F_GETFL);
+  if (flags < 0 || fcntl(pipefd[0], F_SETFL, flags | O_NONBLOCK) < 0
+      || fcntl(pipefd[0], F_SETFD, FD_CLOEXEC) < 0
+      || fcntl(pipefd[1], F_SETFD, FD_CLOEXEC) < 0) {
+    close(pipefd[0]);
+    close(pipefd[1]);
+    return;
+  }
+  pid_t pid = fork();
+  if (pid == 0) {
+    close(pipefd[0]);
+    if (dpy)
+      close(ConnectionNumber(dpy));
+    if (dup2(pipefd[1], STDOUT_FILENO) < 0)
+      _exit(1);
+    close(pipefd[1]);
+    execlp("voxtype", "voxtype", "status", "--follow", "--format", "text", NULL);
+    _exit(1);
+  }
+  close(pipefd[1]);
+  if (pid < 0) {
+    close(pipefd[0]);
+    return;
+  }
+  voxtype_fd = pipefd[0];
+  voxtype_pid = pid;
+}
+
 static void grabbuttons(Client *c) {
   unsigned int mods[] = { 0, LockMask, numlockmask, numlockmask|LockMask };
 
@@ -1286,19 +1458,28 @@ static void grabbuttons(Client *c) {
 }
 
 static void grabkeys(void) {
+  const Key *keysets[] = { keys, releasekeys };
+  const size_t keycounts[] = { LENGTH(keys), LENGTH(releasekeys) };
+
   updatenumlockmask();
+  XGrabServer(dpy);
   XUngrabKey(dpy, AnyKey, AnyModifier, root);
-  for (unsigned int i = 0; i < LENGTH(keys); i++) {
-    KeyCode code = XKeysymToKeycode(dpy, keys[i].keysym);
-    if (code == 0) {
-      fprintf(stderr, "opendwm: cannot grab unmapped keysym 0x%lx\n",
-              (unsigned long)keys[i].keysym);
-      continue;
+  for (size_t set = 0; set < LENGTH(keysets); set++) {
+    for (size_t i = 0; i < keycounts[set]; i++) {
+      KeyCode code = XKeysymToKeycode(dpy, keysets[set][i].keysym);
+      if (code == 0) {
+        fprintf(stderr, "opendwm: cannot grab unmapped keysym 0x%lx\n",
+                (unsigned long)keysets[set][i].keysym);
+        continue;
+      }
+      unsigned int mods[] = { 0, LockMask, numlockmask, numlockmask|LockMask };
+      for (unsigned int j = 0; j < LENGTH(mods); j++)
+        XGrabKey(dpy, code, keysets[set][i].mod | mods[j], root, True,
+                 GrabModeAsync, GrabModeAsync);
     }
-    unsigned int mods[] = { 0, LockMask, numlockmask, numlockmask|LockMask };
-    for (unsigned int j = 0; j < LENGTH(mods); j++)
-      XGrabKey(dpy, code, keys[i].mod | mods[j], root, True, GrabModeAsync, GrabModeAsync);
   }
+  XUngrabServer(dpy);
+  XSync(dpy, False);
 }
 
 static void updatenumlockmask(void) {
@@ -1316,14 +1497,27 @@ static void updatenumlockmask(void) {
   XFreeModifiermap(modmap);
 }
 
-static void keypress(XEvent *e) {
+static void keyevent(XEvent *e) {
   XKeyEvent *ev = &e->xkey;
   KeySym sym = XkbKeycodeToKeysym(dpy, (KeyCode)ev->keycode, 0, 0);
-  for (unsigned int i = 0; i < LENGTH(keys); i++) {
-    if (keys[i].keysym == sym
-        && cleanmask(ev->state) == keys[i].mod) {
-      if (keys[i].func)
-        keys[i].func(&(keys[i].arg));
+  const Key *keyset = e->type == KeyRelease ? releasekeys : keys;
+  size_t keycount = e->type == KeyRelease ? LENGTH(releasekeys) : LENGTH(keys);
+
+  for (size_t i = 0; i < keycount; i++) {
+    if (keyset[i].keysym == sym && cleanmask(ev->state) == keyset[i].mod) {
+      if (e->type == KeyRelease
+          && XEventsQueued(dpy, QueuedAfterReading) > 0) {
+        XEvent next;
+
+        XPeekEvent(dpy, &next);
+        if (next.type == KeyPress && next.xkey.keycode == ev->keycode
+            && next.xkey.time == ev->time) {
+          XNextEvent(dpy, &next);
+          return;
+        }
+      }
+      if (keyset[i].func)
+        keyset[i].func(&(keyset[i].arg));
       break;
     }
   }
@@ -1367,27 +1561,8 @@ static void killclient(const Arg *arg) {
   (void)arg;
   if (!sel)
     return;
-  Atom *protocols = NULL;
-  int n = 0;
-  if (XGetWMProtocols(dpy, sel->win, &protocols, &n)) {
-    for (int i = 0; i < n; i++) {
-      if (protocols[i] == wmatom) {
-        XEvent ev;
-        memset(&ev, 0, sizeof(ev));
-        ev.type = ClientMessage;
-        ev.xclient.window = sel->win;
-        ev.xclient.message_type = XInternAtom(dpy, "WM_PROTOCOLS", False);
-        ev.xclient.format = 32;
-        ev.xclient.data.l[0] = wmatom;
-        ev.xclient.data.l[1] = CurrentTime;
-        XSendEvent(dpy, sel->win, False, NoEventMask, &ev);
-        XFlush(dpy);
-        XFree(protocols);
-        return;
-      }
-    }
-    XFree(protocols);
-  }
+  if (sendevent(sel, wm_delete))
+    return;
   XKillClient(dpy, sel->win);
 }
 
@@ -1404,6 +1579,10 @@ static void maprequest(XEvent *e) {
   XWindowAttributes wa;
   if (!XGetWindowAttributes(dpy, ev->window, &wa) || wa.override_redirect)
     return;
+  if (window_has_type(ev->window, net_wm_window_type_dock)) {
+    XMapWindow(dpy, ev->window);
+    return;
+  }
   if (!wintoclient(ev->window))
     manage(ev->window, &wa);
 }
@@ -1433,7 +1612,10 @@ static void configurerequest(XEvent *e) {
       c->w = ev->width;
     if (ev->value_mask & CWHeight)
       c->h = ev->height;
-    XMoveResizeWindow(dpy, c->win, c->x, c->y, c->w, c->h);
+    int x = c->x;
+    if (!isvisible(c))
+      x = -(c->w + 2 * (int)borderpx) * 2;
+    XMoveResizeWindow(dpy, c->win, x, c->y, c->w, c->h);
     configure(c);
     restack();
     return;
@@ -1534,6 +1716,8 @@ static void reapchildren(void) {
     if (pid == serial_pid) {
       serial_pid = -1;
       startserial();
+    } else if (pid == voxtype_pid) {
+      voxtype_pid = -1;
     }
   }
 }
@@ -1541,6 +1725,35 @@ static void reapchildren(void) {
 static void sigchld(int unused) {
   (void)unused;
   child_exited = 1;
+}
+
+static int sendevent(Client *c, Atom protocol) {
+  Atom *protocols = NULL;
+  int count = 0;
+  int supported = 0;
+
+  if (XGetWMProtocols(dpy, c->win, &protocols, &count)) {
+    for (int i = 0; i < count; i++) {
+      if (protocols[i] == protocol) {
+        supported = 1;
+        break;
+      }
+    }
+    XFree(protocols);
+  }
+  if (!supported)
+    return 0;
+
+  XEvent ev;
+  memset(&ev, 0, sizeof(ev));
+  ev.type = ClientMessage;
+  ev.xclient.window = c->win;
+  ev.xclient.message_type = wm_protocols;
+  ev.xclient.format = 32;
+  ev.xclient.data.l[0] = protocol;
+  ev.xclient.data.l[1] = CurrentTime;
+  XSendEvent(dpy, c->win, False, NoEventMask, &ev);
+  return 1;
 }
 
 static void setup(void) {
@@ -1569,7 +1782,9 @@ static void setup(void) {
   if (wm_detected)
     die("another window manager is running");
   XSetErrorHandler(xerror);
-  wmatom = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
+  wm_delete = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
+  wm_protocols = XInternAtom(dpy, "WM_PROTOCOLS", False);
+  wm_take_focus = XInternAtom(dpy, "WM_TAKE_FOCUS", False);
   net_wm_window_type = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE", False);
   net_wm_window_type_dialog = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_DIALOG", False);
   net_wm_window_type_utility = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_UTILITY", False);
@@ -1587,6 +1802,7 @@ static void setup(void) {
   has_icon_vol = font_has_glyph("󰕾");
   has_icon_mute = font_has_glyph("󰖁");
   has_icon_mem = font_has_glyph("󰍛");
+  has_icon_voxtype = font_has_glyph("") && font_has_glyph("");
 
   Colormap cmap = DefaultColormap(dpy, screen);
   XColor xcol;
@@ -1620,6 +1836,8 @@ static void setup(void) {
 
   grabkeys();
   scan();
+  if (topbar)
+    startvoxtypestatus();
   updateclock();
   drawbar();
 }
@@ -1791,6 +2009,8 @@ static void scan(void) {
   for (unsigned int i = 0; i < num; i++) {
     if (!XGetWindowAttributes(dpy, wins[i], &wa) || wa.override_redirect)
       continue;
+    if (window_has_type(wins[i], net_wm_window_type_dock))
+      continue;
     if (XGetTransientForHint(dpy, wins[i], &dummy1))
       continue;
     if (wa.map_state == IsViewable)
@@ -1799,6 +2019,8 @@ static void scan(void) {
 
   for (unsigned int i = 0; i < num; i++) {
     if (!XGetWindowAttributes(dpy, wins[i], &wa) || wa.override_redirect)
+      continue;
+    if (window_has_type(wins[i], net_wm_window_type_dock))
       continue;
     if (!XGetTransientForHint(dpy, wins[i], &dummy1))
       continue;
@@ -1828,6 +2050,7 @@ static int xerrorstart(Display *dpy, XErrorEvent *ee) {
 }
 
 static void cleanup(void) {
+  stopvoxtypestatus();
   while (clients) {
     Client *c = clients;
     XUngrabButton(dpy, AnyButton, AnyModifier, c->win);
@@ -1849,7 +2072,7 @@ static void bar_init(void) {
   XSetWindowAttributes wa;
   wa.override_redirect = True;
   wa.background_pixel = col_bg;
-  wa.event_mask = ExposureMask | ButtonPressMask;
+  wa.event_mask = ExposureMask | ButtonPressMask | FocusChangeMask;
   barwin = XCreateWindow(dpy, root, 0, 0, sw, barheight, 0, DefaultDepth(dpy, screen),
                          CopyFromParent, DefaultVisual(dpy, screen),
                          CWOverrideRedirect | CWBackPixel | CWEventMask, &wa);
@@ -1866,6 +2089,8 @@ static void bar_init(void) {
     die("failed to allocate xftcol_bg");
   if (!XftColorAllocName(dpy, DefaultVisual(dpy, screen), DefaultColormap(dpy, screen), col_accent_hex, &xftcol_accent))
     die("failed to allocate xftcol_accent");
+  if (!XftColorAllocName(dpy, DefaultVisual(dpy, screen), DefaultColormap(dpy, screen), col_border_norm_hex, &xftcol_dim))
+    die("failed to allocate xftcol_dim");
   if (showbar)
     XMapRaised(dpy, barwin);
 }
@@ -1877,6 +2102,7 @@ static void bar_cleanup(void) {
     XftColorFree(dpy, vis, cmap, &xftcol_fg);
     XftColorFree(dpy, vis, cmap, &xftcol_bg);
     XftColorFree(dpy, vis, cmap, &xftcol_accent);
+    XftColorFree(dpy, vis, cmap, &xftcol_dim);
     XftDrawDestroy(xftdraw);
     xftdraw = NULL;
   }
@@ -1893,13 +2119,18 @@ static void run(void) {
   int xfd = ConnectionNumber(dpy);
   time_t last = 0;
   while (running) {
-    fd_set fds;
-    FD_ZERO(&fds);
-    FD_SET(xfd, &fds);
-    struct timeval tv;
-    tv.tv_sec = 0;
-    tv.tv_usec = 200000;
-    select(xfd + 1, &fds, NULL, NULL, &tv);
+    if (!XPending(dpy)) {
+      struct pollfd pfds[2] = {
+        { .fd = xfd, .events = POLLIN },
+        { .fd = voxtype_fd, .events = POLLIN }
+      };
+      nfds_t count = voxtype_fd >= 0 ? 2 : 1;
+      poll(pfds, count, 200);
+      if (count > 1 && (pfds[1].revents & (POLLIN | POLLHUP)))
+        readvoxtypestatus();
+      else if (count > 1 && (pfds[1].revents & (POLLERR | POLLNVAL)))
+        stopvoxtypestatus();
+    }
     while (XPending(dpy)) {
       XNextEvent(dpy, &ev);
       if (topbar && ev.xany.window == barwin && ev.type == Expose)
@@ -1907,6 +2138,7 @@ static void run(void) {
       switch (ev.type) {
         case MapRequest: maprequest(&ev); break;
         case ButtonPress: buttonpress(&ev); break;
+        case FocusIn: focusin(&ev); break;
         case ConfigureRequest: configurerequest(&ev); break;
         case ConfigureNotify: {
           XConfigureEvent *cev = &ev.xconfigure;
@@ -1971,13 +2203,20 @@ static void run(void) {
           break;
         }
         case UnmapNotify: unmapnotify(&ev); break;
-        case KeyPress: keypress(&ev); break;
-        case MappingNotify:
-          XRefreshKeyboardMapping(&ev.xmapping);
+        case KeyPress:
+        case KeyRelease: keyevent(&ev); break;
+        case MappingNotify: {
+          XMappingEvent *mev = &ev.xmapping;
+          if (mev->request != MappingKeyboard && mev->request != MappingModifier)
+            break;
+          XRefreshKeyboardMapping(mev);
           grabkeys();
-          for (Client *c = clients; c; c = c->next)
-            grabbuttons(c);
+          if (mev->request == MappingModifier) {
+            for (Client *c = clients; c; c = c->next)
+              grabbuttons(c);
+          }
           break;
+        }
       }
     }
     reapchildren();
