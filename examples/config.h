@@ -21,15 +21,18 @@ static const char *clockfmt = "%d %b %Y  %H:%M";
 static const char *col_bg_hex = "#1a1b26";
 static const char *col_fg_hex = "#c0caf5";
 static const char *col_accent_hex = "#7aa2f7";
+static const char *col_recording_hex = "#f7768e";
 static const char *col_border_focus_hex = "#7aa2f7";
 static const char *col_border_norm_hex = "#3b4261";
 
 /* Spawn commands */
-static const char *termcmd[] = { "alacritty", NULL };
+static const char *termcmd[] = { "ghostty", NULL };
 static const char *browsercmd[] = { "helium-browser", NULL };
 static const char *drunmenucmd[] = { "j4-dmenu-desktop", "--dmenu", "dmenu -c -l 10 -p \"drun:\" -i -bw 3 -F -h 35", NULL };
 static const char *runmenucmd[] = { "dmenu_run", "-c", "-l", "10", "-p", "drun:", "-i", "-bw", "3", "-F", "-h", "35", NULL };
 static const char *sshotmenucmd[] = { "sshot-menu", NULL };
+static const char *recordmenucmd[] = { "record-menu", NULL };
+static const char *recordstopcmd[] = { "record-menu", "stop", NULL };
 static const char *powermenucmd[] = { "power-menu", NULL };
 static const char *linksmenucmd[] = { "links-menu", NULL };
 static const char *notesmenucmd[] = { "notes-menu", NULL };
@@ -42,13 +45,13 @@ static const char *nextcmd[] = { "playerctl", "next", NULL };
 static const char *prevcmd[] = { "playerctl", "previous", NULL };
 static const char *dictationstartcmd[] = { "dictation", "start", NULL };
 static const char *dictationstopcmd[] = { "dictation", "stop", NULL };
-static const char *cliampcmd[] = { "alacritty", "--class", "Alacritty,opendwm-cliamp", "-e", "cliamp", NULL };
-static const char *scratchtermcmd[] = { "alacritty", "--class", "Alacritty,opendwm-scratch-terminal", NULL };
+static const char *cliampcmd[] = { "ghostty", "--class=opendwm.cliamp", "--x11-instance-name=opendwm-cliamp", "-e", "cliamp", NULL };
+static const char *scratchtermcmd[] = { "ghostty", "--class=opendwm.scratch-terminal", "--x11-instance-name=opendwm-scratch-terminal", NULL };
 
 /* Scratchpads: { X11 class, X11 instance, command } */
 static const Scratchpad scratchpads[] = {
-  { "Alacritty", "opendwm-cliamp", cliampcmd },
-  { "Alacritty", "opendwm-scratch-terminal", scratchtermcmd },
+  { "opendwm.cliamp", "opendwm-cliamp", cliampcmd },
+  { "opendwm.scratch-terminal", "opendwm-scratch-terminal", scratchtermcmd },
 };
 
 /* Window matching rules: { class, isfloating } */
@@ -87,6 +90,8 @@ static const Key keys[] = {
 
   { MODKEY, XK_p, spawn, { .v = drunmenucmd } },
   { MODKEY|ShiftMask, XK_p, spawn, { .v = runmenucmd } },
+  { MODKEY, XK_r, spawn, { .v = recordmenucmd } },
+  { MODKEY|ShiftMask, XK_r, spawn, { .v = recordstopcmd } },
   { MODKEY, XK_s, spawn, { .v = sshotmenucmd } },
   { MODKEY, XK_x, spawn, { .v = powermenucmd } },
   { MODKEY, XK_n, spawn, { .v = notesmenucmd } },

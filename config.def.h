@@ -20,22 +20,23 @@ static const char *clockfmt = "%d %b %Y  %H:%M";
 static const char *col_bg_hex = "#1a1b26";
 static const char *col_fg_hex = "#c0caf5";
 static const char *col_accent_hex = "#7aa2f7";
+static const char *col_recording_hex = "#f7768e";
 static const char *col_border_focus_hex = "#7aa2f7";
 static const char *col_border_norm_hex = "#3b4261";
 
 /* Spawn commands */
-static const char *termcmd[] = { "xterm", NULL };
+static const char *termcmd[] = { "ghostty", NULL };
 static const char *volupcmd[] = { "wpctl", "set-volume", "--limit", "1.0", "@DEFAULT_AUDIO_SINK@", "5%+", NULL };
 static const char *voldowncmd[] = { "wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%-", NULL };
 static const char *volmutecmd[] = { "wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle", NULL };
 static const char *notesmenucmd[] = { "notes-menu", NULL };
 static const char *dictationstartcmd[] = { "dictation", "start", NULL };
 static const char *dictationstopcmd[] = { "dictation", "stop", NULL };
-static const char *scratchtermcmd[] = { "xterm", "-name", "opendwm-scratch-terminal", NULL };
+static const char *scratchtermcmd[] = { "ghostty", "--class=opendwm.scratch-terminal", "--x11-instance-name=opendwm-scratch-terminal", NULL };
 
 /* Scratchpads: { X11 class, X11 instance, command } */
 static const Scratchpad scratchpads[] = {
-  { "XTerm", "opendwm-scratch-terminal", scratchtermcmd },
+  { "opendwm.scratch-terminal", "opendwm-scratch-terminal", scratchtermcmd },
 };
 
 /* Window matching rules: { class, isfloating } */

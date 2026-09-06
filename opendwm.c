@@ -145,8 +145,11 @@ static void updatecursorfrompointer(void);
 static void update_bar_visibility(void);
 static int getusedram(char *buf, size_t buflen);
 static int getvolume(char *buf, size_t buflen);
+static void readrecordingstatus(void);
 static void readvoxtypestatus(void);
+static void startrecordingstatus(void);
 static void startvoxtypestatus(void);
+static void stoprecordingstatus(void);
 static void stopvoxtypestatus(void);
 static int textwidth(const char *text);
 static long long nowms(void);
@@ -176,6 +179,7 @@ static int xerrorstart(Display *dpy, XErrorEvent *ee);
 static const char *tags[] = { "1", "2", "3", "4", "5", "6", "7", "8", "9", "0" };
 
 enum { LAYOUT_TILE, LAYOUT_MONOCLE };
+enum { RECORDING_STOPPED, RECORDING_ACTIVE };
 enum { VOXTYPE_STOPPED, VOXTYPE_IDLE, VOXTYPE_RECORDING, VOXTYPE_TRANSCRIBING };
 
 #if __has_include("config.h")
@@ -197,6 +201,7 @@ static XftDraw *xftdraw;
 static XftColor xftcol_fg;
 static XftColor xftcol_bg;
 static XftColor xftcol_accent;
+static XftColor xftcol_recording;
 static XftColor xftcol_dim;
 static unsigned long col_bg;
 static unsigned long col_fg;
@@ -235,7 +240,13 @@ static char righttext[96] = {0};
 static int has_icon_vol = 0;
 static int has_icon_mute = 0;
 static int has_icon_mem = 0;
+static int has_icon_recording = 0;
 static int has_icon_voxtype = 0;
+static int recording_state = RECORDING_STOPPED;
+static int recording_fd = -1;
+static pid_t recording_pid = -1;
+static char recording_statusbuf[64];
+static size_t recording_statusbuf_used = 0;
 static int voxtype_state = VOXTYPE_STOPPED;
 static int voxtype_fd = -1;
 static pid_t voxtype_pid = -1;
@@ -1203,6 +1214,11 @@ static void drawbar(void) {
                     (const FcChar8 *)layouttxt, (int)strlen(layouttxt));
   x += lw + lpad * 2;
 
+  const char *recordingtext = has_icon_recording ? "󰻃" : "[REC]";
+  XftColor *recordingcolor = recording_state == RECORDING_ACTIVE
+                             ? &xftcol_recording : &xftcol_dim;
+  int recordingslotwidth = textwidth(recordingtext);
+
   const char *voxtypetext = NULL;
   XftColor *voxtypecolor = &xftcol_accent;
   const char *voxtype_idle = has_icon_voxtype ? "" : "[MIC]";
@@ -1231,19 +1247,28 @@ static void drawbar(void) {
     if (statustextwidth > 0)
       voxtypegap = textwidth("  ");
   }
-  int rightwidth = voxtypeslotwidth + voxtypegap + statustextwidth;
+  int recordinggap = (voxtypetext || statustextwidth > 0) ? textwidth("  ") : 0;
+  int rightwidth = recordingslotwidth + recordinggap + voxtypeslotwidth
+                   + voxtypegap + statustextwidth;
   int rightx = sw - rightwidth - 10;
   if (rightx < x)
     rightx = x + 10;
+  int recordingwidth = textwidth(recordingtext);
+  int recordingx = rightx + (recordingslotwidth - recordingwidth) / 2;
+  XftDrawStringUtf8(xftdraw, recordingcolor, xftfont, recordingx,
+                    (barheight + xftfont->ascent - xftfont->descent) / 2,
+                    (const FcChar8 *)recordingtext, (int)strlen(recordingtext));
   if (voxtypetext) {
     int voxtypewidth = textwidth(voxtypetext);
-    int voxtypex = rightx + (voxtypeslotwidth - voxtypewidth) / 2;
+    int voxtypex = rightx + recordingslotwidth + recordinggap
+                    + (voxtypeslotwidth - voxtypewidth) / 2;
     XftDrawStringUtf8(xftdraw, voxtypecolor, xftfont, voxtypex,
                       (barheight + xftfont->ascent - xftfont->descent) / 2,
                       (const FcChar8 *)voxtypetext, (int)strlen(voxtypetext));
   }
   if (statustextwidth > 0) {
-    int statusx = rightx + voxtypeslotwidth + voxtypegap;
+    int statusx = rightx + recordingslotwidth + recordinggap
+                  + voxtypeslotwidth + voxtypegap;
     XftDrawStringUtf8(xftdraw, &xftcol_fg, xftfont, statusx,
                       (barheight + xftfont->ascent - xftfont->descent) / 2,
                       (const FcChar8 *)righttext, (int)strlen(righttext));
@@ -1475,6 +1500,84 @@ static int getvolume(char *buf, size_t buflen) {
       snprintf(buf, buflen, "%d%%", (int)(vol * 100.0f + 0.5f));
   }
   return 1;
+}
+
+static void setrecordingstatus(const char *status) {
+  int state = strcmp(status, "recording") == 0
+              ? RECORDING_ACTIVE : RECORDING_STOPPED;
+  if (state != recording_state) {
+    recording_state = state;
+    drawbar();
+  }
+}
+
+static void stoprecordingstatus(void) {
+  if (recording_fd >= 0) {
+    close(recording_fd);
+    recording_fd = -1;
+  }
+  if (recording_pid > 0)
+    kill(recording_pid, SIGTERM);
+  recording_statusbuf_used = 0;
+  setrecordingstatus("stopped");
+}
+
+static void readrecordingstatus(void) {
+  char buf[64];
+  ssize_t nread = read(recording_fd, buf, sizeof(buf));
+
+  if (nread <= 0) {
+    if (nread == 0 || (errno != EINTR && errno != EAGAIN))
+      stoprecordingstatus();
+    return;
+  }
+  for (ssize_t i = 0; i < nread; i++) {
+    if (buf[i] == '\n') {
+      if (recording_statusbuf_used > 0
+          && recording_statusbuf[recording_statusbuf_used - 1] == '\r')
+        recording_statusbuf_used--;
+      recording_statusbuf[recording_statusbuf_used] = '\0';
+      setrecordingstatus(recording_statusbuf);
+      recording_statusbuf_used = 0;
+    } else if (recording_statusbuf_used + 1 < sizeof(recording_statusbuf)) {
+      recording_statusbuf[recording_statusbuf_used++] = buf[i];
+    } else {
+      recording_statusbuf_used = 0;
+    }
+  }
+}
+
+static void startrecordingstatus(void) {
+  int pipefd[2];
+
+  if (pipe(pipefd) < 0)
+    return;
+  int flags = fcntl(pipefd[0], F_GETFL);
+  if (flags < 0 || fcntl(pipefd[0], F_SETFL, flags | O_NONBLOCK) < 0
+      || fcntl(pipefd[0], F_SETFD, FD_CLOEXEC) < 0
+      || fcntl(pipefd[1], F_SETFD, FD_CLOEXEC) < 0) {
+    close(pipefd[0]);
+    close(pipefd[1]);
+    return;
+  }
+  pid_t pid = fork();
+  if (pid == 0) {
+    close(pipefd[0]);
+    if (dpy)
+      close(ConnectionNumber(dpy));
+    if (dup2(pipefd[1], STDOUT_FILENO) < 0)
+      _exit(1);
+    close(pipefd[1]);
+    execlp("record-menu", "record-menu", "status", NULL);
+    _exit(1);
+  }
+  close(pipefd[1]);
+  if (pid < 0) {
+    close(pipefd[0]);
+    return;
+  }
+  recording_fd = pipefd[0];
+  recording_pid = pid;
 }
 
 static void setvoxtypestatus(const char *status) {
@@ -1853,6 +1956,8 @@ static void reapchildren(void) {
     if (pid == serial_pid) {
       serial_pid = -1;
       startserial();
+    } else if (pid == recording_pid) {
+      recording_pid = -1;
     } else if (pid == voxtype_pid) {
       voxtype_pid = -1;
     }
@@ -1939,6 +2044,7 @@ static void setup(void) {
   has_icon_vol = font_has_glyph("󰕾");
   has_icon_mute = font_has_glyph("󰖁");
   has_icon_mem = font_has_glyph("󰍛");
+  has_icon_recording = font_has_glyph("󰻃");
   has_icon_voxtype = font_has_glyph("") && font_has_glyph("");
 
   Colormap cmap = DefaultColormap(dpy, screen);
@@ -1974,8 +2080,10 @@ static void setup(void) {
 
   grabkeys();
   scan();
-  if (topbar)
+  if (topbar) {
+    startrecordingstatus();
     startvoxtypestatus();
+  }
   updateclock();
   drawbar();
 }
@@ -2209,6 +2317,7 @@ static int xerrorstart(Display *dpy, XErrorEvent *ee) {
 }
 
 static void cleanup(void) {
+  stoprecordingstatus();
   stopvoxtypestatus();
   while (clients) {
     Client *c = clients;
@@ -2252,6 +2361,8 @@ static void bar_init(void) {
     die("failed to allocate xftcol_bg");
   if (!XftColorAllocName(dpy, DefaultVisual(dpy, screen), DefaultColormap(dpy, screen), col_accent_hex, &xftcol_accent))
     die("failed to allocate xftcol_accent");
+  if (!XftColorAllocName(dpy, DefaultVisual(dpy, screen), DefaultColormap(dpy, screen), col_recording_hex, &xftcol_recording))
+    die("failed to allocate xftcol_recording");
   if (!XftColorAllocName(dpy, DefaultVisual(dpy, screen), DefaultColormap(dpy, screen), col_border_norm_hex, &xftcol_dim))
     die("failed to allocate xftcol_dim");
   if (showbar)
@@ -2265,6 +2376,7 @@ static void bar_cleanup(void) {
     XftColorFree(dpy, vis, cmap, &xftcol_fg);
     XftColorFree(dpy, vis, cmap, &xftcol_bg);
     XftColorFree(dpy, vis, cmap, &xftcol_accent);
+    XftColorFree(dpy, vis, cmap, &xftcol_recording);
     XftColorFree(dpy, vis, cmap, &xftcol_dim);
     XftDrawDestroy(xftdraw);
     xftdraw = NULL;
@@ -2283,16 +2395,27 @@ static void run(void) {
   time_t last = 0;
   while (running) {
     if (!XPending(dpy)) {
-      struct pollfd pfds[2] = {
-        { .fd = xfd, .events = POLLIN },
-        { .fd = voxtype_fd, .events = POLLIN }
-      };
-      nfds_t count = voxtype_fd >= 0 ? 2 : 1;
+      struct pollfd pfds[3];
+      nfds_t count = 0;
+      pfds[count++] = (struct pollfd){ .fd = xfd, .events = POLLIN };
+      if (recording_fd >= 0)
+        pfds[count++] = (struct pollfd){ .fd = recording_fd, .events = POLLIN };
+      if (voxtype_fd >= 0)
+        pfds[count++] = (struct pollfd){ .fd = voxtype_fd, .events = POLLIN };
       poll(pfds, count, 200);
-      if (count > 1 && (pfds[1].revents & (POLLIN | POLLHUP)))
-        readvoxtypestatus();
-      else if (count > 1 && (pfds[1].revents & (POLLERR | POLLNVAL)))
-        stopvoxtypestatus();
+      for (nfds_t i = 1; i < count; i++) {
+        if (pfds[i].fd == recording_fd) {
+          if (pfds[i].revents & (POLLIN | POLLHUP))
+            readrecordingstatus();
+          else if (pfds[i].revents & (POLLERR | POLLNVAL))
+            stoprecordingstatus();
+        } else if (pfds[i].fd == voxtype_fd) {
+          if (pfds[i].revents & (POLLIN | POLLHUP))
+            readvoxtypestatus();
+          else if (pfds[i].revents & (POLLERR | POLLNVAL))
+            stopvoxtypestatus();
+        }
+      }
     }
     while (XPending(dpy)) {
       XNextEvent(dpy, &ev);
