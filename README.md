@@ -1,101 +1,66 @@
 # OpenDWM
 
-OpenDWM is a small, fast, tiling window manager for X11 with a built-in status bar,
-simple layouts, and a source-configurable workflow inspired by dwm.
+OpenDWM is a keyboard-driven tiling desktop inspired by dwm. It favors a
+small, predictable workspace over a full desktop environment: numbered
+workspaces, a master/stack layout, monocle, persistent floating scratchpads,
+and a compact status bar.
+
+It began as a standalone X11 window manager written in C. The Wayland version
+recreates the same workflow with Hyprland for window management and
+Quickshell for the bar, rather than implementing a second compositor.
 
 ## Features
-- Tiling and monocle layouts
-- Minimal, readable C code
-- Configurable keybindings and commands via a header file
-- Built-in status bar with clock and system info
-- Floating scratchpads that stay running while hidden
 
-## Dependencies
-- X11 development headers
-- Xft development headers
-- pkg-config
+- Master/stack tiling and gapless, borderless monocle.
+- Ten numbered workspaces with move-and-follow navigation.
+- Floating rules, fullscreen handling, and persistent scratchpads.
+- Keyboard-first focus, stack movement, master promotion, and gap controls.
+- Compact status bar with workspace state, layout, clock, audio, memory,
+  recording, and dictation indicators.
+- Source configuration for X11; live Lua/QML configuration for Wayland.
 
-On Debian/Ubuntu, for example:
+Some integrations, including recording, screenshots, notes, links, and
+dictation, delegate to external helper commands. See the backend documentation
+for their requirements.
 
-```sh
-sudo apt install build-essential pkg-config libx11-dev libxft-dev
-```
+## Backends
 
-## Build
+- [X11](x11/README.md): the original C99 tiling window manager with its own
+  built-in bar and source configuration.
+- [Wayland](wayland/README.md): a Hyprland Lua configuration, Quickshell bar,
+  and helper scripts that recreate the OpenDWM workflow.
+
+## Quick Start
+
+Build the X11 window manager from the repository root:
 
 ```sh
 make
-```
-
-To install system-wide:
-
-```sh
 sudo make install
 ```
 
+The root Makefile forwards these commands to `x11/` for compatibility.
+
+Set up the Wayland configuration separately:
+
+```sh
+wayland/setup.sh --check
+wayland/setup.sh
+```
+
+The two backends are independent. Installing or running the Wayland setup
+does not modify the X11 source, local X11 configuration, or installed X11
+binary.
+
 ## Configuration
 
-The default configuration lives in `config.def.h`. Your local overrides go in
-`config.h`, which is ignored by git.
-
-Recommended workflow:
-
-```sh
-make
-```
-
-This creates `config.h` from `config.def.h` if it does not exist. Then edit
-`config.h` and rebuild:
+X11 configuration lives in `x11/config.h` and takes effect after rebuilding
+with `make`. Wayland configuration lives in `wayland/hyprland/hyprland.lua`;
+apply changes in a running session with:
 
 ```sh
-make
+hyprctl reload
 ```
 
-Alternatively, you can copy manually:
-
-```sh
-cp config.def.h config.h
-```
-
-### Scratchpads
-
-Scratchpads are configured with a unique X11 class and instance plus the command
-that creates the window. The first press of a scratchpad binding launches and
-shows its command; later presses hide or show that same window. Hidden
-scratchpads are moved off-screen rather than closed, so their processes continue
-to run. They are floating, start centered at the terminal's configured size, and
-can be moved with `Mod+Button1`.
-
-The local example defines these bindings:
-
-- `Mod+Shift+u`: Alacritty running `cliamp`
-- `Mod+Shift+i`: an Alacritty shell
-
-Each scratchpad's class and instance must match the command that launches it.
-
-## Testing
-
-Xephyr runs a nested, visible X server and is useful for testing OpenDWM without
-replacing the active window manager. Xvfb provides a headless X server for
-automated tests. On Arch Linux, install them with:
-
-```sh
-sudo pacman -S xorg-server-xephyr xorg-server-xvfb
-```
-
-To start a nested test session, run Xephyr and OpenDWM from separate terminals:
-
-```sh
-Xephyr :1 -screen 1280x720
-DISPLAY=:1 ./opendwm
-```
-
-## Running
-
-Add this to your `.xinitrc` (or configure your display manager):
-
-```sh
-exec opendwm
-```
-
-Then start X with `startx`.
+Quickshell reloads its QML bar configuration automatically. See the backend
+READMEs for installation, session startup, testing, and rollback details.

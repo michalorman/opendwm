@@ -1,0 +1,152 @@
+#!/bin/bash
+# scratchpad NAME CLASS CMD...; serialize per compositor and workspace.
+set -eu
+export LC_ALL=C
+fail() { echo "scratchpad: $*" >&2; exit 1; }
+[[ $# -ge 3 ]] || fail 'usage: scratchpad NAME CLASS CMD...'
+name=$1 class=$2
+shift 2
+[[ $name =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ && -n $class ]] || fail 'invalid name or empty class'
+[[ -n ${XDG_RUNTIME_DIR:-} && -d $XDG_RUNTIME_DIR && -O $XDG_RUNTIME_DIR ]] || fail 'private XDG_RUNTIME_DIR required'
+[[ $(stat -c %a -- "$XDG_RUNTIME_DIR") == 700 ]] || fail 'XDG_RUNTIME_DIR must have mode 0700'
+[[ ${HYPRLAND_INSTANCE_SIGNATURE:-} =~ ^[A-Za-z0-9_-]+$ ]] || fail 'invalid compositor signature'
+base="$XDG_RUNTIME_DIR/opendwm-scratchpad-$HYPRLAND_INSTANCE_SIGNATURE-$name"
+exec 9>"$base.lock"
+# One deadline includes lock acquisition, queries, dispatches and mapping.
+deadline=$((SECONDS + 6))
+flock -w 2 9 || fail 'lock timed out'
+# Budget-exhausted and command failures are both generic failures here;
+# the exec dispatch below needs a stronger distinction and computes its
+# budget inline instead of using a sentinel exit code (timeout propagates
+# the invoked command's status, so a sentinel could collide with it).
+ctl() {
+  local remaining=$((deadline - SECONDS))
+  (( remaining > 0 )) || return 1
+  timeout -k 0.2s "${remaining}s" hyprctl "$@"
+}
+mutate() {
+  local reply
+  reply=$(ctl dispatch "$@") || fail "dispatch failed: $1"
+  [[ $reply == ok ]] || fail "dispatch rejected: $reply"
+}
+query() {
+  local json
+  # -a includes unmapped clients: an existing-but-unmapped scratchpad must
+  # not look absent, or a duplicate would be launched.
+  json=$(ctl -j -a clients) || fail 'client query failed'
+  client=$(jq -scer --arg c "$class" '
+    if length == 1 then .[0] else error("expected one document") end |
+    if type == "array" and all(.[];
+      (.class | type == "string") and
+      (.address | type == "string" and test("^0x[0-9a-fA-F]+$")) and
+      (.mapped | type == "boolean") and
+      (.workspace.name | type == "string"))
+    then [.[] | select(.class == $c)] |
+      if length <= 1 then . else error("ambiguous class") end
+    else error("invalid client data") end
+  ' <<< "$json") || fail 'invalid client data'
+}
+
+# True when the special workspace is currently displayed on the focused
+# monitor. Used for launch/recovery, which must ENSURE visibility rather
+# than toggle it (an already-open workspace would be closed by a toggle).
+# Exit codes: 0 visible, 1 confirmed not visible, >=2 query/parse failure.
+special_visible() {
+  local mons
+  mons=$(ctl -j monitors) || return 2
+  # The name must be an explicitly reported string: missing/null fields are
+  # invalid, never silently "not visible". An empty string IS a valid
+  # "no special workspace" report.
+  jq -scer --arg w "special:$name" '
+    if length == 1 then .[0] else error("expected one document") end |
+    if type == "array" then [.[] | select(.focused == true)] |
+      if length == 1 then .[0] |
+        if (.specialWorkspace | type) == "object"
+           and (.specialWorkspace.name | type) == "string"
+        then .specialWorkspace.name == $w
+        else error("invalid specialWorkspace") end
+      else error("no focused monitor") end
+    else error("invalid monitor data") end
+  ' <<< "$mons" >/dev/null
+}
+
+query
+ensure=   # set when this activation launched or recovered the client
+if [[ $client == '[]' ]]; then
+  [[ ! -e $base.pending ]] || fail "previous launch is uncertain; refusing duplicate (marker: $base.pending)"
+  # Hyprland executes via sh: single quotes preserve even empty/newline args.
+  cmd=
+  for arg do
+    arg=${arg//\'/\'\\\'\'}
+    cmd+=" '$arg'"
+  done
+  # Guard the common case: not enough budget to attempt the dispatch, so
+  # fail before any marker exists. The rc==90 path below covers the
+  # residual pause between this guard and the dispatch.
+  (( deadline - SECONDS >= 2 )) || fail 'operation timed out'
+  : > "$base.pending"
+  # Compute the budget inline: an exhausted budget here proves nothing was
+  # sent (no sentinel exit code that timeout could propagate from hyprctl).
+  remaining=$((deadline - SECONDS))
+  if (( remaining <= 0 )); then
+    rm -f -- "$base.pending"
+    fail 'operation timed out'
+  fi
+  # Lua config manager: spawn via hl.exec_cmd through eval. Floating,
+  # centering and size come from the window rules; the move into the
+  # special workspace happens in the recovery path below.
+  # Lua short-string escaping: backslashes and apostrophes, plus LF/CR,
+  # which are rejected outright by Lua's lexer.
+  lua_cmd=${cmd//\\/\\\\}
+  lua_cmd=${lua_cmd//\'/\\\'}
+  lua_cmd=${lua_cmd//$'\n'/\\n}
+  lua_cmd=${lua_cmd//$'\r'/\\r}
+  rc=0
+  reply=$(timeout -k 0.2s "${remaining}s" hyprctl eval \
+    "hl.exec_cmd('${lua_cmd# }')") || rc=$?
+  if (( rc != 0 )); then
+    # Transport outcome uncertain: keep the marker to block duplicates.
+    fail 'exec dispatch failed (outcome uncertain; pending marker kept)'
+  elif [[ $reply != ok ]]; then
+    # The compositor explicitly rejected the request: it was not launched.
+    rm -f -- "$base.pending"
+    fail "exec dispatch rejected: $reply"
+  fi
+  ensure=1
+fi
+
+while [[ $client == '[]' ]] || [[ $(jq -r '.[0].mapped' <<< "$client") != true ]]; do
+  (( SECONDS < deadline )) || fail 'client did not map before deadline'
+  sleep 0.1
+  query
+done
+# A mapped matching client confirms the launch outcome, so any pending
+# marker from an earlier uncertain launch is resolved here — independently
+# of whether workspace recovery below succeeds.
+rm -f -- "$base.pending"
+addr=$(jq -r '.[0].address' <<< "$client")
+ws=$(jq -r '.[0].workspace.name' <<< "$client")
+if [[ $ws != "special:$name" ]]; then
+  mutate "hl.dsp.window.move({workspace=\"special:$name\", follow=false, window=\"address:$addr\"})"
+  query
+  jq -e --arg a "$addr" --arg w "special:$name" \
+    'length == 1 and .[0].address == $a and .[0].mapped and .[0].workspace.name == $w' \
+    <<< "$client" >/dev/null || fail 'recovery readback failed'
+  ensure=1
+fi
+if [[ -n $ensure ]]; then
+  # Launch/recovery: show the workspace unless it is already displayed.
+  # A blind toggle would close an already-open workspace and hide the
+  # client we just launched or recovered. jq -e maps: 0 visible, 1 not
+  # visible, >1 query/parse failure.
+  vis=0
+  special_visible || vis=$?
+  if (( vis == 1 )); then
+    mutate "hl.dsp.workspace.toggle_special(\"$name\")"
+  elif (( vis != 0 )); then
+    fail 'visibility query failed'
+  fi
+else
+  # Existing client in place: ordinary show/hide toggle.
+  mutate "hl.dsp.workspace.toggle_special(\"$name\")"
+fi

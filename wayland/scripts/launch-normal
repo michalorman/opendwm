@@ -1,0 +1,37 @@
+#!/bin/bash
+# launch-normal CMD...
+# Launch an application on the focused monitor's NORMAL workspace, even
+# when a special (scratchpad) workspace is currently displayed. Without
+# this, new windows land on the special workspace and vanish with it.
+set -eu
+export LC_ALL=C
+fail() { echo "launch-normal: $*" >&2; exit 1; }
+[[ $# -ge 1 ]] || fail 'usage: launch-normal CMD...'
+
+mons=$(timeout -k 0.2s 2s hyprctl -j monitors) || fail 'monitor query failed'
+ws=$(jq -ser '
+  if length == 1 then .[0] else error("expected one document") end |
+  if type == "array" then [.[] | select(.focused == true)] |
+    if length == 1 then .[0] |
+      if (.activeWorkspace | type) == "object" and (.activeWorkspace.id | type) == "number"
+      then .activeWorkspace.id
+      else error("invalid activeWorkspace") end
+    else error("no focused monitor") end
+  else error("invalid monitor data") end
+' <<< "$mons") || fail 'invalid monitor data'
+[[ $ws =~ ^-?[0-9]+$ ]] || fail "invalid workspace id '$ws'"
+
+# Shell-quote each argument, then Lua-escape the whole command string.
+cmd=
+for arg do
+  arg=${arg//\'/\'\\\'\'}
+  cmd+=" '$arg'"
+done
+lua_cmd=${cmd//\\/\\\\}
+lua_cmd=${lua_cmd//\'/\\\'}
+lua_cmd=${lua_cmd//$'\n'/\\n}
+lua_cmd=${lua_cmd//$'\r'/\\r}
+
+reply=$(timeout -k 0.2s 2s hyprctl eval \
+  "hl.exec_cmd('${lua_cmd# }', {workspace=$ws})") || fail 'exec dispatch failed'
+[[ $reply == ok ]] || fail "exec dispatch rejected: $reply"

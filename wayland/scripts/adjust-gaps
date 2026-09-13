@@ -1,0 +1,20 @@
+#!/bin/bash
+# Adjust remembered tile gaps; DELTA is an integer in -1000..1000.
+set -eu
+export LC_ALL=C
+fail() { echo "adjust-gaps: $*" >&2; exit 1; }
+[[ $# == 1 && $1 =~ ^-?(0|[1-9][0-9]{0,3})$ ]] || fail 'invalid delta'
+delta=$1
+(( delta >= -1000 && delta <= 1000 )) || fail 'delta out of range'
+[[ -n ${XDG_RUNTIME_DIR:-} && -d $XDG_RUNTIME_DIR && -O $XDG_RUNTIME_DIR ]] || fail 'private XDG_RUNTIME_DIR required'
+[[ $(stat -c %a -- "$XDG_RUNTIME_DIR") == 700 ]] || fail 'XDG_RUNTIME_DIR must have mode 0700'
+[[ ${HYPRLAND_INSTANCE_SIGNATURE:-} =~ ^[A-Za-z0-9_-]+$ ]] || fail 'invalid compositor signature'
+exec 9>"$XDG_RUNTIME_DIR/opendwm-gaps-$HYPRLAND_INSTANCE_SIGNATURE.lock"
+flock -w 5 9 || fail 'lock timed out'
+
+# The config owns remembered tile gaps and makes this a no-op in monocle.
+# Querying applied monocle gaps (0) here would otherwise overwrite the
+# tile baseline when returning to master.
+reply=$(timeout -k 0.2s 2s hyprctl eval "opendwm_adjust_gaps($delta)") \
+  || fail 'layout policy call failed'
+[[ $reply == ok ]] || fail "layout policy rejected: $reply"

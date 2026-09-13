@@ -1,0 +1,12 @@
+#!/bin/sh
+# Move active window to workspace N and follow it (dwm tag + view).
+# window.move follows by default; a second dispatch would break
+# workspace_back_and_forth. Lua config: dispatch takes Lua expressions.
+set -eu
+[ "$#" -eq 1 ] || { echo "usage: move-to-workspace N" >&2; exit 1; }
+case $1 in '' | *[!0-9]* | 0*) echo "usage: move-to-workspace N" >&2; exit 1 ;; esac
+[ "${#1}" -le 9 ] || { echo "move-to-workspace: workspace out of range" >&2; exit 1; }
+reply=$(timeout -k 0.2s 2s hyprctl dispatch "hl.dsp.window.move({workspace=$1})") || {
+  echo "move-to-workspace: dispatch failed" >&2; exit 1;
+}
+[ "$reply" = ok ] || { echo "move-to-workspace: dispatch rejected: $reply" >&2; exit 1; }

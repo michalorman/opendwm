@@ -34,6 +34,14 @@ typedef struct {
 } Key;
 
 typedef struct {
+  KeyCode keycode;
+  unsigned int mod;
+  KeySym keysym;
+  unsigned long serial;
+  int failed;
+} GrabbedKey;
+
+typedef struct {
   unsigned int mod;
   unsigned int button;
   void (*func)(const Arg *arg);
@@ -100,7 +108,7 @@ static int is_transient_for_fullscreen(Client *c);
 static int is_single_tag(unsigned int mask);
 static unsigned int cleanmask(unsigned int mask);
 static void grabbuttons(Client *c);
-static void grabkeys(void);
+static int grabkeys(void);
 static void incmfact(const Arg *arg);
 static void incgaps(const Arg *arg);
 static void keyevent(XEvent *e);
@@ -171,7 +179,11 @@ static int xerrorstart(Display *dpy, XErrorEvent *ee);
 #define SCRATCHTAG (1u << LENGTH(tags))
 #define SPAWN_QUEUE_SIZE 64
 #define MOUSEMASK (ButtonPressMask|ButtonReleaseMask|PointerMotionMask)
+#define KEYMODMASK (ShiftMask|LockMask|ControlMask|Mod1Mask|Mod2Mask \
+                    |Mod3Mask|Mod4Mask|Mod5Mask)
 #define RESIZE_GRIP_SIZE 12
+#define KEY_GRAB_RETRY_MAX 5
+#define KEY_GRAB_RETRY_DELAY_MS 200
 #define TAGKEYS(KEYSYM, TAG) \
   { MODKEY, KEYSYM, view, { .ui = 1u << (TAG) } }, \
   { MODKEY|ShiftMask, KEYSYM, tagandview, { .ui = 1u << (TAG) } }
@@ -227,6 +239,13 @@ static int running = 1;
 static int statusdirty = 0;
 static int wm_detected = 0;
 static unsigned int numlockmask = 0;
+static GrabbedKey *grabbed_keys = NULL;
+static size_t grabbed_key_count = 0;
+static GrabbedKey *key_grab_requests = NULL;
+static size_t key_grab_request_count = 0;
+static int key_grab_retry_pending = 0;
+static unsigned int key_grab_retry_count = 0;
+static long long key_grab_retry_at = 0;
 static Client *clients = NULL;
 static Client *stack = NULL;
 static Client *sel = NULL;
@@ -490,7 +509,7 @@ static int tag_index_from_mask(unsigned int mask) {
 }
 
 static unsigned int cleanmask(unsigned int mask) {
-  return mask & ~(numlockmask|LockMask);
+  return (mask & KEYMODMASK) & ~(numlockmask|LockMask);
 }
 
 static int canresize(Client *c, unsigned int state, int x, int y) {
@@ -682,7 +701,8 @@ static void manage(Window w, XWindowAttributes *wa) {
   if (c->scratchpad >= 0) {
     c->tags = SCRATCHTAG;
     c->scratchshown = 1;
-    scratchpad_clients[c->scratchpad] = c;
+    if (!scratchpad_clients[c->scratchpad])
+      scratchpad_clients[c->scratchpad] = c;
   }
   c->isfullscreen = window_has_state(w, net_wm_state_fullscreen);
   refreshclientrole(c, 1);
@@ -702,7 +722,7 @@ static void manage(Window w, XWindowAttributes *wa) {
   }
   attach(c);
   attachstack(c);
-  XSelectInput(dpy, w, ButtonPressMask | EnterWindowMask | FocusChangeMask
+  XSelectInput(dpy, w, EnterWindowMask | FocusChangeMask
       | PropertyChangeMask | StructureNotifyMask);
   grabbuttons(c);
   XSetWindowBorderWidth(dpy, w, (c->isfullscreen
@@ -721,8 +741,19 @@ static void unmanage(Client *c, int destroyed) {
     XUndefineCursor(dpy, c->win);
     resizecursorwin = None;
   }
-  if (c->scratchpad >= 0 && scratchpad_clients[c->scratchpad] == c)
-    scratchpad_clients[c->scratchpad] = NULL;
+  if (c->scratchpad >= 0 && scratchpad_clients[c->scratchpad] == c) {
+    Client *next_owner = NULL;
+    for (Client *it = clients; it; it = it->next) {
+      if (it != c && it->scratchpad == c->scratchpad
+          && it->transient_for == None) {
+        next_owner = it;
+        break;
+      }
+    }
+    if (next_owner)
+      next_owner->scratchshown = c->scratchshown;
+    scratchpad_clients[c->scratchpad] = next_owner;
+  }
   Client *focus_c = NULL;
   if (sel == c) {
     Client *parent = wintoclient(c->transient_for);
@@ -1126,6 +1157,30 @@ static void restack(void) {
     if (isvisible(c) && !c->isabove && !c->isfullscreen
         && !is_transient_for_fullscreen(c) && !c->isfloating)
       wins[i++] = c->win;
+
+  /* raise transient windows above their managed ancestors */
+  for (unsigned int j = 0; j < i; j++) {
+    Client *c = wintoclient(wins[j]);
+    Window owner = c ? c->transient_for : None;
+    for (unsigned int depth = 0; owner != None && depth < 32; depth++) {
+      int found = -1;
+      for (unsigned int k = 0; k < j; k++) {
+        if (wins[k] == owner) {
+          found = (int)k;
+          break;
+        }
+      }
+      if (found >= 0) {
+        Window w = wins[j];
+        memmove(&wins[found + 1], &wins[found],
+                (j - (unsigned int)found) * sizeof(Window));
+        wins[found] = w;
+        break;
+      }
+      Client *parent = wintoclient(owner);
+      owner = parent ? parent->transient_for : None;
+    }
+  }
 
   if (i > 1)
     XRestackWindows(dpy, wins, (int)i);
@@ -1670,36 +1725,146 @@ static void grabbuttons(Client *c) {
   XUngrabButton(dpy, AnyButton, AnyModifier, c->win);
   for (unsigned int i = 0; i < LENGTH(buttons); i++) {
     for (unsigned int j = 0; j < LENGTH(mods); j++) {
-      XGrabButton(dpy, buttons[i].button, buttons[i].mod | mods[j], c->win,
-                  False, ButtonPressMask, GrabModeAsync, GrabModeAsync,
-                  None, None);
+      XGrabButton(dpy, buttons[i].button,
+                  cleanmask(buttons[i].mod) | mods[j], c->win, False,
+                  ButtonPressMask, GrabModeAsync, GrabModeAsync, None, None);
     }
   }
 }
 
-static void grabkeys(void) {
+static int grabbed_key_matches(const GrabbedKey *grabbed, size_t count,
+                               KeyCode keycode, unsigned int mod) {
+  for (size_t i = 0; i < count; i++) {
+    if (grabbed[i].keycode == keycode && grabbed[i].mod == mod)
+      return 1;
+  }
+  return 0;
+}
+
+static int add_grabbed_key(GrabbedKey **grabbed, size_t *count,
+                           size_t *capacity, KeyCode keycode,
+                           unsigned int mod, KeySym keysym) {
+  if (grabbed_key_matches(*grabbed, *count, keycode, mod))
+    return 1;
+  if (*count == *capacity) {
+    size_t new_capacity = *capacity * 2;
+    GrabbedKey *new_grabbed = realloc(*grabbed,
+                                      new_capacity * sizeof(*new_grabbed));
+
+    if (!new_grabbed) {
+      fprintf(stderr, "opendwm: cannot grow keyboard grab list\n");
+      return 0;
+    }
+    *grabbed = new_grabbed;
+    *capacity = new_capacity;
+  }
+  (*grabbed)[*count].keycode = keycode;
+  (*grabbed)[*count].mod = mod;
+  (*grabbed)[*count].keysym = keysym;
+  (*grabbed)[*count].serial = 0;
+  (*grabbed)[*count].failed = 0;
+  (*count)++;
+  return 1;
+}
+
+static void schedule_key_grab_retry(void) {
+  if (++key_grab_retry_count >= KEY_GRAB_RETRY_MAX) {
+    key_grab_retry_pending = 0;
+    fprintf(stderr, "opendwm: keyboard grab recovery failed\n");
+    return;
+  }
+  key_grab_retry_pending = 1;
+  key_grab_retry_at = nowms() + KEY_GRAB_RETRY_DELAY_MS;
+}
+
+static int grabkeys(void) {
   const Key *keysets[] = { keys, releasekeys };
   const size_t keycounts[] = { LENGTH(keys), LENGTH(releasekeys) };
+  size_t capacity = (LENGTH(keys) + LENGTH(releasekeys)) * 4;
+  GrabbedKey *desired;
+  size_t desired_count = 0;
+  unsigned int old_numlockmask = numlockmask;
+  int min_keycode, max_keycode;
+
+  if (capacity == 0)
+    capacity = 1;
+  desired = calloc(capacity, sizeof(*desired));
+  if (!desired) {
+    fprintf(stderr, "opendwm: cannot allocate keyboard grab list\n");
+    schedule_key_grab_retry();
+    return 0;
+  }
 
   updatenumlockmask();
-  XGrabServer(dpy);
-  XUngrabKey(dpy, AnyKey, AnyModifier, root);
+  XDisplayKeycodes(dpy, &min_keycode, &max_keycode);
   for (size_t set = 0; set < LENGTH(keysets); set++) {
     for (size_t i = 0; i < keycounts[set]; i++) {
-      KeyCode code = XKeysymToKeycode(dpy, keysets[set][i].keysym);
-      if (code == 0) {
-        fprintf(stderr, "opendwm: cannot grab unmapped keysym 0x%lx\n",
-                (unsigned long)keysets[set][i].keysym);
-        continue;
+      KeySym keysym = keysets[set][i].keysym;
+      unsigned int binding_mod = cleanmask(keysets[set][i].mod);
+      int mapped = 0;
+
+      for (int code = min_keycode; code <= max_keycode; code++) {
+        if (XkbKeycodeToKeysym(dpy, (KeyCode)code, 0, 0) != keysym)
+          continue;
+        mapped = 1;
+        unsigned int mods[] = {
+          0, LockMask, numlockmask, numlockmask|LockMask
+        };
+        for (size_t j = 0; j < LENGTH(mods); j++) {
+          if (!add_grabbed_key(&desired, &desired_count, &capacity,
+                               (KeyCode)code, binding_mod | mods[j], keysym)) {
+            numlockmask = old_numlockmask;
+            free(desired);
+            schedule_key_grab_retry();
+            return 0;
+          }
+        }
       }
-      unsigned int mods[] = { 0, LockMask, numlockmask, numlockmask|LockMask };
-      for (unsigned int j = 0; j < LENGTH(mods); j++)
-        XGrabKey(dpy, code, keysets[set][i].mod | mods[j], root, True,
-                 GrabModeAsync, GrabModeAsync);
+      if (!mapped && XKeysymToKeycode(dpy, keysym) == 0) {
+        fprintf(stderr, "opendwm: cannot grab unmapped keysym 0x%lx\n",
+                (unsigned long)keysym);
+      }
+    }
+  }
+
+  XSync(dpy, False);
+  key_grab_requests = desired;
+  key_grab_request_count = desired_count;
+  XGrabServer(dpy);
+  for (size_t i = 0; i < desired_count; i++) {
+    if (grabbed_key_matches(grabbed_keys, grabbed_key_count,
+                            desired[i].keycode, desired[i].mod))
+      continue;
+    desired[i].serial = XNextRequest(dpy);
+    XGrabKey(dpy, desired[i].keycode, desired[i].mod, root, True,
+             GrabModeAsync, GrabModeAsync);
+  }
+  for (size_t i = 0; i < grabbed_key_count; i++) {
+    if (!grabbed_key_matches(desired, desired_count,
+                             grabbed_keys[i].keycode, grabbed_keys[i].mod)) {
+      XUngrabKey(dpy, grabbed_keys[i].keycode, grabbed_keys[i].mod, root);
     }
   }
   XUngrabServer(dpy);
   XSync(dpy, False);
+  key_grab_requests = NULL;
+  key_grab_request_count = 0;
+
+  free(grabbed_keys);
+  size_t kept_count = 0;
+  for (size_t i = 0; i < desired_count; i++) {
+    if (!desired[i].failed)
+      desired[kept_count++] = desired[i];
+  }
+  grabbed_keys = desired;
+  grabbed_key_count = kept_count;
+  if (numlockmask != old_numlockmask) {
+    for (Client *c = clients; c; c = c->next)
+      grabbuttons(c);
+  }
+  key_grab_retry_pending = 0;
+  key_grab_retry_count = 0;
+  return 1;
 }
 
 static void updatenumlockmask(void) {
@@ -1708,6 +1873,10 @@ static void updatenumlockmask(void) {
   if (!modmap)
     return;
   KeyCode numlock = XKeysymToKeycode(dpy, XK_Num_Lock);
+  if (!numlock) {
+    XFreeModifiermap(modmap);
+    return;
+  }
   for (int i = 0; i < 8; i++) {
     for (int j = 0; j < modmap->max_keypermod; j++) {
       if (modmap->modifiermap[i * modmap->max_keypermod + j] == numlock)
@@ -1724,7 +1893,8 @@ static void keyevent(XEvent *e) {
   size_t keycount = e->type == KeyRelease ? LENGTH(releasekeys) : LENGTH(keys);
 
   for (size_t i = 0; i < keycount; i++) {
-    if (keyset[i].keysym == sym && cleanmask(ev->state) == keyset[i].mod) {
+    if (keyset[i].keysym == sym
+        && cleanmask(ev->state) == cleanmask(keyset[i].mod)) {
       if (e->type == KeyRelease
           && XEventsQueued(dpy, QueuedAfterReading) > 0) {
         XEvent next;
@@ -1764,7 +1934,7 @@ static void buttonpress(XEvent *e) {
     if (c) {
       for (unsigned int i = 0; i < LENGTH(buttons); i++) {
         if (buttons[i].button == ev->button
-            && cleanmask(ev->state) == buttons[i].mod) {
+            && cleanmask(ev->state) == cleanmask(buttons[i].mod)) {
           if (buttons[i].func)
             buttons[i].func(&(buttons[i].arg));
           handled = 1;
@@ -2078,7 +2248,8 @@ static void setup(void) {
   if (topbar)
     XDefineCursor(dpy, barwin, cursor);
 
-  grabkeys();
+  if (!grabkeys())
+    die("failed to initialize keyboard grabs");
   scan();
   if (topbar) {
     startrecordingstatus();
@@ -2304,6 +2475,19 @@ static int xerror(Display *dpy, XErrorEvent *ee) {
     return 0;
   char message[128];
   XGetErrorText(dpy, ee->error_code, message, sizeof(message));
+  if (ee->request_code == X_GrabKey) {
+    for (size_t i = 0; i < key_grab_request_count; i++) {
+      if (key_grab_requests[i].serial == ee->serial) {
+        key_grab_requests[i].failed = 1;
+        fprintf(stderr,
+                "opendwm: cannot grab keysym 0x%lx (keycode %u, modifiers 0x%x): %s\n",
+                (unsigned long)key_grab_requests[i].keysym,
+                (unsigned int)key_grab_requests[i].keycode,
+                key_grab_requests[i].mod, message);
+        return 0;
+      }
+    }
+  }
   fprintf(stderr, "opendwm: X error: %s (request %u, minor %u)\n",
           message, ee->request_code, ee->minor_code);
   return 0;
@@ -2336,6 +2520,9 @@ static void cleanup(void) {
   if (gc)
     XFreeGC(dpy, gc);
   XCloseDisplay(dpy);
+  free(grabbed_keys);
+  grabbed_keys = NULL;
+  grabbed_key_count = 0;
 }
 
 static void bar_init(void) {
@@ -2496,14 +2683,16 @@ static void run(void) {
           if (mev->request != MappingKeyboard && mev->request != MappingModifier)
             break;
           XRefreshKeyboardMapping(mev);
+          key_grab_retry_pending = 0;
+          key_grab_retry_count = 0;
           grabkeys();
-          if (mev->request == MappingModifier) {
-            for (Client *c = clients; c; c = c->next)
-              grabbuttons(c);
-          }
           break;
         }
       }
+    }
+    if (key_grab_retry_pending && nowms() >= key_grab_retry_at) {
+      key_grab_retry_pending = 0;
+      grabkeys();
     }
     updatecursorfrompointer();
     reapchildren();

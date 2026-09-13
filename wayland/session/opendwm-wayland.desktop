@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=opendwm (Wayland)
+Comment=Hyprland compositor with the opendwm Quickshell bar
+Exec=/usr/local/bin/start-opendwm-wayland
+Type=Application
+DesktopNames=Hyprland
+Keywords=tiling;wayland;compositor;

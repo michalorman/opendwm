@@ -1,0 +1,186 @@
+#!/usr/bin/env python3
+"""Start the session's bar, or toggle it without guessing an IPC instance."""
+
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import time
+
+
+# Quickshell CLI options read from the environment. They conflict with the
+# explicit --path/--pid selection used here, so never inherit them.
+QUICKSHELL_ENV_OPTIONS = ("QS_CONFIG_PATH", "QS_CONFIG_NAME", "QS_MANIFEST")
+
+
+def clean_env():
+    return {key: value for key, value in os.environ.items()
+            if key not in QUICKSHELL_ENV_OPTIONS}
+
+
+def identity(pid):
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        return None if fields[0] == "Z" else fields[19]
+    except FileNotFoundError:
+        return None
+
+
+
+
+
+def main():
+    if sys.argv[1:] not in ([], ["toggle"]):
+        raise RuntimeError("usage: start-bar [toggle]")
+    signature = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if not signature or not runtime:
+        raise RuntimeError("HYPRLAND_INSTANCE_SIGNATURE and XDG_RUNTIME_DIR are required")
+    runtime = Path(runtime)
+    if not runtime.is_absolute() or runtime.stat().st_uid != os.getuid():
+        raise RuntimeError("XDG_RUNTIME_DIR must be an absolute, user-owned directory")
+    shell = str((Path(__file__).resolve().parent.parent / "quickshell/shell.qml").resolve(strict=True))
+    directory = runtime / ("opendwm-bar-" + hashlib.sha256(signature.encode()).hexdigest())
+    directory.mkdir(mode=0o700, exist_ok=True)
+    if directory.is_symlink() or directory.stat().st_uid != os.getuid():
+        raise RuntimeError("unsafe bar state directory")
+    state = directory / "instance.json"
+    boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+
+    with (directory / "lock").open("a") as lock:
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("bar lock timed out")
+                time.sleep(0.05)
+
+        record = json.loads(state.read_text()) if state.exists() else None
+        pid = None
+        if record:
+            if record["signature"] != signature or record["path"] != shell:
+                raise RuntimeError("bar state belongs to another session or configuration")
+            candidate = record["pid"]
+            if not isinstance(candidate, int) or candidate <= 0:
+                raise RuntimeError("invalid bar PID")
+            if (record["boot"] == boot and record["starttime"] is not None and
+                    identity(candidate) == record["starttime"]):
+                # Starttime prevents PID reuse. Quickshell crash recovery
+                # re-executes the process with a DIFFERENT argv (no --path),
+                # so argv is not a stable identity check; the environment
+                # survives execve and binds the process to this session.
+                # The IPC ping payload then confirms the configuration.
+                proc = Path(f"/proc/{candidate}")
+                try:
+                    environ = proc.joinpath("environ").read_bytes().split(b"\0")
+                except FileNotFoundError:
+                    environ = []
+                if os.fsencode("HYPRLAND_INSTANCE_SIGNATURE=" + signature) not in environ:
+                    raise RuntimeError("recorded bar process identity does not match")
+                pid = candidate
+
+        started = pid is None
+        if started:
+            # A child spawned but not yet registered must never survive this
+            # helper: an unmanaged bar would be duplicated by the next call.
+            # Signals are RECORDED, not raised inline: a raise inside Popen
+            # could skip child assignment, and a raise during cleanup could
+            # bypass SIGKILL/reaping. The flag is checked once the child
+            # handle is owned; cleanup then runs shielded. SIGKILL cannot be
+            # caught; the spawn/publish window is kept minimal.
+            received = []
+
+            def record_signal(signum, _frame):
+                received.append(signum)
+
+            previous = {sig: signal.signal(sig, record_signal)
+                        for sig in (signal.SIGTERM, signal.SIGINT)}
+            child = None
+            try:
+                # Never daemonize: Popen's PID must remain the actual shell
+                # PID. close_fds keeps the flock out of the long-lived child.
+                child = subprocess.Popen(
+                    ["quickshell", "--path", shell], stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    start_new_session=True, close_fds=True, env=clean_env(),
+                )
+                pid = child.pid
+                record = dict(pid=pid, starttime=identity(pid), boot=boot,
+                              signature=signature, path=shell)
+                # Test-only hooks: widen the spawn/publish window and/or
+                # force a publication failure at a synchronized point. Gated
+                # and bounded so an ambient environment cannot stall startup.
+                if os.environ.get("OPENDWM_BAR_TEST_HOOK") == "1":
+                    delay = min(float(os.environ.get("OPENDWM_BAR_START_DELAY", "0")), 10)
+                    fail_publish = os.environ.get("OPENDWM_BAR_FAIL_PUBLISH", "")
+                    end = time.monotonic() + delay
+                    while time.monotonic() < end and not received:
+                        if fail_publish and os.path.exists(fail_publish):
+                            raise RuntimeError("publication failed by test hook")
+                        time.sleep(0.05)
+                if received:
+                    raise KeyboardInterrupt(f"received signal {received[0]}")
+                temporary = directory / "instance.tmp"
+                temporary.write_text(json.dumps(record))
+                temporary.replace(state)
+            except BaseException:
+                if child is not None:
+                    # Shield cleanup from further catchable signals so
+                    # termination and reaping always complete.
+                    for sig in (signal.SIGTERM, signal.SIGINT):
+                        signal.signal(sig, signal.SIG_IGN)
+                    child.terminate()
+                    try:
+                        child.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        child.kill()
+                        child.wait()
+                raise
+            finally:
+                for sig, handler in previous.items():
+                    signal.signal(sig, handler)
+
+        def call(function, timeout):
+            if identity(pid) != record["starttime"] or record["starttime"] is None:
+                raise RuntimeError("bar process exited")
+            try:
+                result = subprocess.run(
+                    ["quickshell", "ipc", "--pid", str(pid), "call", "bar", function],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL, timeout=timeout, close_fds=True,
+                    env=clean_env(),
+                )
+                # v0.2.1 status is not a reliable acknowledgement; require the payload.
+                return result.stdout.strip()
+            except subprocess.TimeoutExpired:
+                return b""
+
+        deadline = time.monotonic() + 3
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError("bar IPC readiness timed out; existing shell retained")
+            if call("ping", min(0.5, remaining)) == b"opendwm-bar":
+                break
+            time.sleep(min(0.05, max(0, deadline - time.monotonic())))
+
+        # Starting a missing bar shows it. Never retry a non-idempotent toggle.
+        if sys.argv[1:] == ["toggle"] and not started:
+            if call("toggle", 1) not in (b"visible", b"hidden"):
+                raise RuntimeError("bar toggle was not acknowledged; existing shell retained")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError,
+            KeyboardInterrupt) as error:
+        print(f"opendwm-bar: {error}", file=sys.stderr)
+        sys.exit(1)

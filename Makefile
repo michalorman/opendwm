@@ -1,27 +1,6 @@
-PREFIX = /usr/local
-BINDIR = $(PREFIX)/bin
+X11_DIR = x11
 
-CC = cc
-CFLAGS = -std=c99 -Wall -Wextra -O2 $(shell pkg-config --cflags xft)
-LDFLAGS = -lX11 $(shell pkg-config --libs xft)
-
-BIN = opendwm
-SRC = opendwm.c
-
-all: $(BIN)
-
-
-config.h:
-	cp config.def.h $@
-
-$(BIN): $(SRC) config.h
-	$(CC) $(CFLAGS) -o $(BIN) $(SRC) $(LDFLAGS)
-
-install: $(BIN)
-	mkdir -p $(BINDIR)
-	install -m 755 $(BIN) $(BINDIR)/$(BIN)
-
-clean:
-	rm -f $(BIN)
+all install clean:
+	$(MAKE) -C $(X11_DIR) $@
 
 .PHONY: all install clean

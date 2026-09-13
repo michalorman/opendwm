@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+config="${XDG_CONFIG_HOME:-$HOME/.config}/hypr/hyprland.lua"
+if [ ! -r "$config" ]; then
+  printf 'opendwm-wayland: missing configuration: %s (run wayland/setup.sh)\n' "$config" >&2
+  exit 1
+fi
+exec start-hyprland -- --config "$config"

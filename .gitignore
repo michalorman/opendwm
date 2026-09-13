@@ -1,8 +1,10 @@
 # Local config
 /config.h
+/x11/config.h
 
 # Build artifacts
 /opendwm
+/x11/opendwm
 *.o
 *.a
 *.so
@@ -43,6 +45,7 @@ vgcore.*
 .idea/
 
 # Tooling outputs
+__pycache__/
 tags
 cscope.*
 compile_commands.json

@@ -1,4 +1,3 @@
-/* My personal configuration */
 #define MODKEY Mod4Mask
 
 /* Layout & tiling behavior */
@@ -14,7 +13,7 @@ static const unsigned int nmaster = 1;    /* number of master windows */
 static const int topbar = 1;              /* 1 = top bar, 0 = no bar */
 static const unsigned int barheight = 22; /* bar height in pixels */
 static const int status_interval = 60;    /* seconds between status refresh */
-static const char *fontname = "JetBrainsMono Nerd Font:size=10";
+static const char *fontname = "fixed";
 static const char *clockfmt = "%d %b %Y  %H:%M";
 
 /* Colors */
@@ -27,36 +26,21 @@ static const char *col_border_norm_hex = "#3b4261";
 
 /* Spawn commands */
 static const char *termcmd[] = { "ghostty", NULL };
-static const char *browsercmd[] = { "helium-browser", NULL };
-static const char *drunmenucmd[] = { "j4-dmenu-desktop", "--dmenu", "dmenu -c -l 10 -p \"drun:\" -i -bw 3 -F -h 35", NULL };
-static const char *runmenucmd[] = { "dmenu_run", "-c", "-l", "10", "-p", "drun:", "-i", "-bw", "3", "-F", "-h", "35", NULL };
-static const char *sshotmenucmd[] = { "sshot-menu", NULL };
-static const char *recordmenucmd[] = { "record-menu", NULL };
-static const char *recordstopcmd[] = { "record-menu", "stop", NULL };
-static const char *powermenucmd[] = { "power-menu", NULL };
-static const char *linksmenucmd[] = { "links-menu", NULL };
-static const char *notesmenucmd[] = { "notes-menu", NULL };
-static const char *onepasswordcmd[] = { "1password", NULL };
 static const char *volupcmd[] = { "wpctl", "set-volume", "--limit", "1.0", "@DEFAULT_AUDIO_SINK@", "5%+", NULL };
 static const char *voldowncmd[] = { "wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%-", NULL };
 static const char *volmutecmd[] = { "wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle", NULL };
-static const char *playpausecmd[] = { "playerctl", "play-pause", NULL };
-static const char *nextcmd[] = { "playerctl", "next", NULL };
-static const char *prevcmd[] = { "playerctl", "previous", NULL };
+static const char *notesmenucmd[] = { "notes-menu", NULL };
 static const char *dictationstartcmd[] = { "dictation", "start", NULL };
 static const char *dictationstopcmd[] = { "dictation", "stop", NULL };
-static const char *cliampcmd[] = { "ghostty", "--class=opendwm.cliamp", "--x11-instance-name=opendwm-cliamp", "-e", "cliamp", NULL };
-static const char *scratchtermcmd[] = { "ghostty", "--class=opendwm.scratch-terminal", "--x11-instance-name=opendwm-scratch-terminal", NULL };
+static const char *scratchtermcmd[] = { "ghostty", "--class=opendwm.scratch-terminal", "--x11-instance-name=opendwm-scratch-terminal", "--window-width=120", "--window-height=35", NULL };
 
 /* Scratchpads: { X11 class, X11 instance, command } */
 static const Scratchpad scratchpads[] = {
-  { "opendwm.cliamp", "opendwm-cliamp", cliampcmd },
   { "opendwm.scratch-terminal", "opendwm-scratch-terminal", scratchtermcmd },
 };
 
 /* Window matching rules: { class, isfloating } */
 static const Rule rules[] = {
-  { "1Password", 1 },
   { NULL, 0 },
 };
 
@@ -86,19 +70,8 @@ static const Key keys[] = {
   { MODKEY, XK_m, setlayout, { .i = LAYOUT_MONOCLE } },
 
   { MODKEY, XK_b, togglebar, { .i = 0 } },
-  { MODKEY|ControlMask, XK_b, spawn, { .v = browsercmd } },
-
-  { MODKEY, XK_p, spawn, { .v = drunmenucmd } },
-  { MODKEY|ShiftMask, XK_p, spawn, { .v = runmenucmd } },
-  { MODKEY, XK_r, spawn, { .v = recordmenucmd } },
-  { MODKEY|ShiftMask, XK_r, spawn, { .v = recordstopcmd } },
-  { MODKEY, XK_s, spawn, { .v = sshotmenucmd } },
-  { MODKEY, XK_x, spawn, { .v = powermenucmd } },
   { MODKEY, XK_n, spawn, { .v = notesmenucmd } },
-  { Mod1Mask, XK_l, spawn, { .v = linksmenucmd } },
-  { MODKEY|ControlMask, XK_p, spawn, { .v = onepasswordcmd } },
-  { MODKEY|ShiftMask, XK_u, togglescratchpad, { .ui = 0 } },
-  { MODKEY|ShiftMask, XK_i, togglescratchpad, { .ui = 1 } },
+  { MODKEY|ShiftMask, XK_i, togglescratchpad, { .ui = 0 } },
 
   { MODKEY, XK_h, incmfact, { .f = -0.05f } },
   { MODKEY, XK_l, incmfact, { .f = +0.05f } },
@@ -113,9 +86,6 @@ static const Key keys[] = {
   { 0, XF86XK_AudioRaiseVolume, spawnserial, { .v = volupcmd } },
   { 0, XF86XK_AudioLowerVolume, spawnserial, { .v = voldowncmd } },
   { 0, XF86XK_AudioMute, spawnserial, { .v = volmutecmd } },
-  { 0, XF86XK_AudioPlay, spawn, { .v = playpausecmd } },
-  { 0, XF86XK_AudioNext, spawn, { .v = nextcmd } },
-  { 0, XF86XK_AudioPrev, spawn, { .v = prevcmd } },
   { 0, XK_F9, spawn, { .v = dictationstartcmd } },
 
 };

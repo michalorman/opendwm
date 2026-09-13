@@ -1,0 +1,41 @@
+#!/bin/sh
+# launcher [drun|run]
+# Primary: dmenu via Xwayland (same patched-dmenu options as the X11
+# session). Fallbacks: tofi/bemenu. Uses the first available backend
+# that supports the requested mode.
+set -u
+
+mode=${1:-drun}
+case $mode in drun | run) ;; *)
+  echo "launcher: mode must be drun or run" >&2
+  exit 1
+  ;;
+esac
+
+fail() {
+  notify-send "launcher" "$1" 2>/dev/null || printf 'launcher: %s\n' "$1" >&2
+  exit 1
+}
+
+if [ "$mode" = drun ]; then
+  if command -v j4-dmenu-desktop >/dev/null && command -v dmenu >/dev/null; then
+    exec j4-dmenu-desktop --dmenu='dmenu -c -l 10 -p "drun:" -i -bw 3 -F -h 35'
+  elif command -v tofi-drun >/dev/null; then
+    exec tofi-drun --drun-launch=true
+  elif command -v j4-dmenu-desktop >/dev/null && command -v bemenu >/dev/null; then
+    exec j4-dmenu-desktop --dmenu='bemenu -c -l 10 -p drun: -i'
+  fi
+  fail "no drun launcher found (dmenu+j4-dmenu-desktop/tofi/bemenu)"
+else
+  if command -v dmenu_run >/dev/null; then
+    exec dmenu_run -c -l 10 -p "drun:" -i -bw 3 -F -h 35
+  elif command -v bemenu-run >/dev/null; then
+    exec bemenu-run -c -l 10 -p run: -i
+  elif command -v tofi-run >/dev/null; then
+    # tofi-run only prints the selection; launch it ourselves.
+    sel=$(tofi-run) || exit 1
+    [ -n "$sel" ] || exit 0
+    exec setsid "$sel"
+  fi
+  fail "no run launcher found (dmenu/bemenu/tofi)"
+fi
