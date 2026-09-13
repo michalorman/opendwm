@@ -14,7 +14,7 @@ The X11 build is untouched and remains available as a fallback.
 ```
 wayland/
   hyprland/hyprland.lua         compositor configuration (Lua)
-  quickshell/shell.qml          bar (workspaces, layout, clock, status)
+  quickshell/shell.qml          bar (workspaces, clock, status)
   scripts/                      integration helpers (see hyprland.lua)
   session/opendwm-wayland.desktop  display-manager session entry
 ```
@@ -151,8 +151,8 @@ practice:
   several can be visible). Hyprland workspaces are exclusive. Nothing in
   the default config used multi-tag features, so this should be invisible.
 - **Lua configuration requires Hyprland >= 0.56.** The layout binds call
-  `hl.config({general={layout=...}})` directly, and the bar indicator
-  polls `getoption general:layout` (supported in Lua mode).
+  `hl.config({general={layout=...}})` directly; the bar polls the layout to
+  switch its background between tiling and monocle modes.
 - **Gap/layout mutations use `hyprctl eval`**, not `keyword`, which Lua
   mode rejects. Running these helpers in a legacy `.conf` session will
   fail; the two configuration formats are not interchangeable at runtime.
@@ -208,7 +208,8 @@ start-opendwm-wayland
 Acceptance checklist (from the migration plan):
 
 - Workspaces: empty, single-window, crowded; `0` maps to workspace 10.
-- Master/monocle switch (`Mod+t`/`Mod+m`), bar indicator follows.
+- Master/monocle switch (`Mod+t`/`Mod+m`); the bar background is transparent
+  in tiling and opaque in monocle.
 - In monocle, tiled windows have no border or gaps; floating scratchpads
   retain borders; returning to master restores the adjusted tile gap.
 - Caps Lock behaves as Ctrl in native Wayland and Xwayland applications.
@@ -217,8 +218,9 @@ Acceptance checklist (from the migration plan):
   close then relaunch.
 - F9 press/release starts and stops dictation; holding F9 does not
   retrigger start.
-- Bar: occupancy dots, active workspace, clock, volume (after `wpctl`
-  changes), RAM, recording and dictation states; `Mod+b` toggles it.
+- Bar: workspace colors reflect empty, occupied, and active states; clock,
+  volume (after `wpctl` changes), RAM, recording and dictation states;
+  `Mod+b` toggles it.
 - Fullscreen hides the bar and restores it afterwards.
 - Volume/media keys; volume shown updates.
 - Native Wayland and Xwayland clients; clipboard between them.
@@ -236,8 +238,8 @@ Acceptance checklist (from the migration plan):
   Quickshell's own crash recovery keeps the same PID; bar control survives
   it because identity is bound to the session environment and the IPC
   handshake, not the original argument vector.
-- The scratchpad helper queries all clients (`hyprctl -a`), so an existing
-  scratchpad that is temporarily unmapped is awaited, not duplicated.
+- The scratchpad helper queries mapped clients only. This avoids a Hyprland
+  0.56.2 crash while serializing an unmapped client with an idle inhibitor.
 - A scratchpad launch whose outcome is uncertain leaves a `.pending` marker
   whose path appears in subsequent errors. A mapped client clears it, as do
   outcomes known to be safe (dispatch never sent, or explicitly rejected).

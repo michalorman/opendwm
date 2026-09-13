@@ -125,19 +125,6 @@ class ScriptsTest(unittest.TestCase):
         self.assertLess(time.monotonic() - start, 8)
         self.assertEqual([c[1] for c in self.mutations()], ["exec"])
 
-    def test_unmapped_client_never_respawns(self):
-        # hyprctl -a reports the existing unmapped client: wait for it to
-        # remap instead of launching a duplicate.
-        self.configure(queries=[client(mapped=False)])
-        start = time.monotonic()
-        self.scratch(False)
-        self.assertLess(time.monotonic() - start, 8)
-        self.assertEqual(self.mutations(), [])
-        self.assertFalse(list(self.root.glob("*.pending")))
-        # A query that reports no client without -a would look identical to
-        # absence; the mock asserts the script actually asked for -a.
-        self.assertTrue(any("-a" in call for call in self.calls()))
-
     def test_pending_marker_never_created_without_dispatch(self):
         # The initial query consumes the budget: the script must fail before
         # creating a pending marker for a launch it never attempted. 5.5s is
@@ -165,14 +152,16 @@ class ScriptsTest(unittest.TestCase):
             ["dispatch", "movetoworkspacesilent", "hl.dsp.window.move({workspace=\"special:term\", follow=false, window=\"address:0xabc\"})"]])
         self.assertTrue(json.loads(self.state.read_text())["special_visible"])
 
-    def test_unmapped_then_remapped_client_is_recovered(self):
-        # Real unmap clears the workspace; remap elsewhere must be recovered
-        # without launching a duplicate.
+    def test_unmapped_client_is_not_serialized(self):
+        # `clients -a` crashes Hyprland 0.56.2 when an unmapped client has an
+        # idle-inhibitor surface. Ignore it and recover the newly mapped client.
         self.configure(queries=[client(mapped=False), client("1"), client()])
         self.scratch()
-        self.assertNotIn("exec", [c[1] for c in self.mutations()])
-        self.assertEqual(self.mutations()[0],
-                         ["dispatch", "movetoworkspacesilent", "hl.dsp.window.move({workspace=\"special:term\", follow=false, window=\"address:0xabc\"})"])
+        self.assertEqual([c[1] for c in self.mutations()],
+                         ["exec", "movetoworkspacesilent", "togglespecialworkspace"])
+        self.assertEqual(self.mutations()[1],
+                          ["dispatch", "movetoworkspacesilent", "hl.dsp.window.move({workspace=\"special:term\", follow=false, window=\"address:0xabc\"})"])
+        self.assertTrue(all("-a" not in call for call in self.calls()))
 
     def test_visibility_query_failure_never_toggles(self):
         # A failed monitor query must not be read as "not visible": the

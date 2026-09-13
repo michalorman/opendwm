@@ -31,9 +31,10 @@ mutate() {
 }
 query() {
   local json
-  # -a includes unmapped clients: an existing-but-unmapped scratchpad must
-  # not look absent, or a duplicate would be launched.
-  json=$(ctl -j -a clients) || fail 'client query failed'
+  # Do not pass -a: Hyprland 0.56.2 crashes while serializing an unmapped
+  # client that has an idle-inhibitor surface (for example during video
+  # playback). The pending marker still prevents duplicate uncertain starts.
+  json=$(ctl -j clients) || fail 'client query failed'
   client=$(jq -scer --arg c "$class" '
     if length == 1 then .[0] else error("expected one document") end |
     if type == "array" and all(.[];

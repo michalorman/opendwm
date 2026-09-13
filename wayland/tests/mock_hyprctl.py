@@ -25,10 +25,15 @@ elif args[0] == "clients":
         reply = item["raw"]
         status = item.get("status", 0)
         time.sleep(item.get("delay", 0))
-    else:
+    elif isinstance(item, list):
         # Like real Hyprland, unmapped clients are hidden unless -a is given.
-        clients = item if "-a" in flags else [c for c in item if c.get("mapped")]
+        clients = item if "-a" in flags else [
+            c for c in item
+            if not isinstance(c, dict) or "mapped" not in c or c["mapped"]
+        ]
         reply = json.dumps(clients)
+    else:
+        reply = json.dumps(item)
 elif args[0] == "monitors":
     # Model special-workspace visibility on the focused monitor.
     item = state.get("monitors")

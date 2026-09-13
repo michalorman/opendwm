@@ -1,5 +1,5 @@
 // opendwm bar port for Quickshell + Hyprland.
-// Layout mirrors the X11 bar: workspaces+layout left, clock center,
+// Layout mirrors the X11 bar: workspaces left, clock center,
 // recording/dictation/volume/RAM right.
 // Requires Quickshell >= 0.2.1 with Hyprland and PipeWire support.
 import QtQuick
@@ -16,7 +16,7 @@ Scope {
   readonly property color colFg: "#c0caf5"
   readonly property color colAccent: "#7aa2f7"
   readonly property color colRecording: "#f7768e"
-  readonly property color colDim: "#3b4261"
+  readonly property color colDim: "#565f89"
   readonly property string fontFamily: "JetBrainsMono Nerd Font"
   // X11 bar uses size=10 (points); at the configured output scale this
   // matches the old session's physical text size.
@@ -38,7 +38,8 @@ Scope {
   // active: monitor id -> active NORMAL workspace id (polled, so output
   // workspace swaps cannot leave it stale like the event-driven model can).
   property var fullscreenState: ({ clients: [], specials: {}, active: {} })
-  property string layoutText: "T"
+  property bool layoutKnown: false
+  property bool monocle: true
   property string ramText: ""
   property string recordingText: ""
   property string dictationText: ""
@@ -257,24 +258,26 @@ Scope {
 
   // --- status processes -------------------------------------------------
 
-  // Active layout indicator (T/M). Polled; the compositor emits no event
-  // for `hyprctl keyword general:layout ...` changes. Unrecognized or
-  // failed responses keep the previous state.
+  // Hyprland emits no event for layout changes, so poll at a short interval
+  // only to choose the panel background. Keep it opaque until confirmed.
   Process {
     id: layoutProc
     command: ["hyprctl", "getoption", "general:layout"]
     stdout: StdioCollector {
       onStreamFinished: {
-        if (this.text.indexOf("monocle") >= 0)
-          root.layoutText = "M";
-        else if (this.text.indexOf("master") >= 0)
-          root.layoutText = "T";
+        if (this.text.indexOf("monocle") >= 0) {
+          root.monocle = true;
+          root.layoutKnown = true;
+        } else if (this.text.indexOf("master") >= 0) {
+          root.monocle = false;
+          root.layoutKnown = true;
+        }
       }
     }
   }
 
   Timer {
-    interval: 2000
+    interval: 250
     running: true
     repeat: true
     triggeredOnStart: true
@@ -391,7 +394,13 @@ Scope {
       }
       // Bar height from actual font metrics, not a copied pixel constant
       implicitHeight: Math.ceil(barFontMetrics.height) + 6
-      color: root.colBg
+      color: root.layoutKnown && !root.monocle ? "transparent" : root.colBg
+      Behavior on color {
+        ColorAnimation {
+          duration: 300
+          easing.type: Easing.InOutQuad
+        }
+      }
 
       FontMetrics {
         id: barFontMetrics
@@ -403,13 +412,13 @@ Scope {
       // fullscreen window (dwm behavior, per output)
       visible: root.barsVisible && !root.hasActualFullscreen(hlMonitor)
 
-      // Left: workspaces 1-9, 0 + layout indicator
+      // Left: workspaces 1-9, 0
       Row {
         id: leftBlock
         anchors.left: parent.left
-        anchors.leftMargin: 8
+        anchors.leftMargin: 4
         anchors.verticalCenter: parent.verticalCenter
-        spacing: 2
+        spacing: 0
 
         Repeater {
           model: 10
@@ -420,30 +429,26 @@ Scope {
             property bool wsOccupied: root.occupied(ws)
             property bool active: bar.activeWsId === wsId
 
-            implicitWidth: label.implicitWidth + 16
+            implicitWidth: bar.implicitHeight
             implicitHeight: bar.implicitHeight
-            color: active ? root.colAccent : "transparent"
+            color: "transparent"
+
+            Rectangle {
+              anchors.centerIn: parent
+              width: parent.width - 6
+              height: parent.height - 6
+              color: active ? root.colAccent : "transparent"
+              radius: 3
+            }
 
             Text {
               id: label
               anchors.centerIn: parent
-              // Number alone, centered; occupancy is a separate square.
               text: wsId === 10 ? "0" : wsId
-              color: active ? root.colBg : root.colFg
+              color: active ? root.colBg
+                : wsOccupied ? root.colFg : root.colDim
               font.family: root.fontFamily
               font.pointSize: root.fontPointSize
-            }
-
-            // Occupancy indicator (matches the X11 bar's 4x4 square)
-            Rectangle {
-              visible: wsOccupied
-              width: 4
-              height: 4
-              anchors.top: parent.top
-              anchors.right: parent.right
-              anchors.topMargin: 3
-              anchors.rightMargin: 3
-              color: active ? root.colBg : root.colAccent
             }
 
             MouseArea {
@@ -453,14 +458,6 @@ Scope {
           }
         }
 
-        Text {
-          text: "[" + root.layoutText + "]"
-          color: root.colFg
-          font.family: root.fontFamily
-          font.pointSize: root.fontPointSize
-          leftPadding: 8
-          anchors.verticalCenter: parent.verticalCenter
-        }
       }
 
       // Center: clock
@@ -477,7 +474,7 @@ Scope {
         anchors.right: parent.right
         anchors.rightMargin: 8
         anchors.verticalCenter: parent.verticalCenter
-        spacing: 12
+        spacing: 18
 
         Text {
           text: root.iconRecording

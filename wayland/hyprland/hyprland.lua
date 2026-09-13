@@ -36,6 +36,9 @@ hl.monitor({
 
 hl.on("hyprland.start", function()
     hl.exec_cmd("python3 " .. script("start-bar"))
+    hl.exec_cmd("change-wallpaper --restore")
+    hl.exec_cmd("dunst")
+    hl.exec_cmd("udiskie")
 end)
 
 -- Optional session services (uncomment if installed):
@@ -51,7 +54,7 @@ end)
 
 hl.config({
     input = {
-        kb_layout    = "us",
+        kb_layout    = "pl", -- Polish programmer layout; Right Alt is AltGr
         kb_options   = "ctrl:nocaps", -- Caps Lock acts as an extra Ctrl
         follow_mouse = 0, -- click-to-focus, like opendwm
         repeat_rate  = 40,
@@ -85,6 +88,9 @@ hl.config({
         mfact          = 0.60,
         orientation    = "left",
         new_status     = "slave",
+        -- Match X11 attach behavior: new normal windows are the first
+        -- visible stack client instead of landing behind older windows.
+        new_on_top     = true,
         smart_resizing = false,
     },
 
@@ -149,6 +155,40 @@ hl.window_rule({
     float = true,
 })
 
+-- Native file chooser observed from Helium. It is already floating, but
+-- defaults to the full work area in monocle; give new portal dialogs a
+-- useful centered size while keeping them manually resizable.
+hl.window_rule({
+    name = "opendwm-gtk-portal-file-chooser",
+    match = { class = [[^xdg-desktop-portal-gtk$]] },
+    float = true,
+    center = true,
+    size = "(monitor_w*0.60) (monitor_h*0.60)",
+})
+
+-- Xwayland modal dialogs can otherwise enter the tiled monocle stack and
+-- fill the workspace. Keep them floating and centered in every layout.
+hl.window_rule({
+    name = "opendwm-xwayland-modal-dialogs",
+    match = {
+        xwayland = true,
+        modal = true,
+    },
+    float = true,
+    center = true,
+})
+
+-- Floating windows keep rounded corners in every layout, including
+-- scratchpads and portal dialogs. Fullscreen windows stay square.
+hl.window_rule({
+    name = "opendwm-floating-rounding",
+    match = {
+        float = true,
+        fullscreen = false,
+    },
+    rounding = 8,
+})
+
 -- Layout policy. Monocle is gapless and borderless for tiled windows only;
 -- floating scratchpads and normal fullscreen handling keep their own rules.
 local tile_gaps = 10
@@ -163,10 +203,23 @@ local monocle_border = hl.window_rule({
 })
 monocle_border:set_enabled(false)
 
+-- Rounded corners are a tiling-only treatment. Monocle intentionally stays
+-- square and gapless; floating windows retain their own appearance.
+local tiled_rounding = hl.window_rule({
+    name = "opendwm-tiled-rounding",
+    match = {
+        float = false,
+        fullscreen = false,
+    },
+    rounding = 8,
+})
+tiled_rounding:set_enabled(true)
+
 function opendwm_set_layout(layout)
     if layout == "monocle" then
         monocle_active = true
         monocle_border:set_enabled(true)
+        tiled_rounding:set_enabled(false)
         hl.config({
             general = {
                 layout = "monocle",
@@ -177,6 +230,7 @@ function opendwm_set_layout(layout)
     else
         monocle_active = false
         monocle_border:set_enabled(false)
+        tiled_rounding:set_enabled(true)
         hl.config({
             general = {
                 layout = "master",
@@ -185,6 +239,11 @@ function opendwm_set_layout(layout)
             },
         })
     end
+
+    -- Rule state and general layout settings schedule property refreshes
+    -- independently. Flush only after all final values are in place so
+    -- clients receive one final, coherent configure after a mode switch.
+    hl.exec_scheduled_prop_refresh_immediately()
 end
 
 -- Called by scripts/adjust-gaps through hyprctl eval. Gap bindings are a
