@@ -433,22 +433,24 @@ Scope {
             implicitHeight: bar.implicitHeight
             color: "transparent"
 
-            Rectangle {
-              anchors.centerIn: parent
-              width: parent.width - 4
-              height: parent.height - 4
-              color: active ? root.colAccent : "transparent"
-              radius: 3
-            }
-
             Text {
               id: label
               anchors.centerIn: parent
               text: wsId === 10 ? "0" : wsId
-              color: active ? root.colBg
-                : wsOccupied ? root.colFg : root.colDim
+              color: wsOccupied ? root.colFg : root.colDim
               font.family: root.fontFamily
               font.pointSize: root.fontPointSize
+            }
+
+            Rectangle {
+              anchors.bottom: parent.bottom
+              anchors.bottomMargin: 3
+              anchors.horizontalCenter: parent.horizontalCenter
+              width: label.implicitWidth + 4
+              height: 2
+              radius: 1
+              color: root.colAccent
+              visible: active
             }
 
             MouseArea {

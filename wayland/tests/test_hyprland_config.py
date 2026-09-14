@@ -68,11 +68,13 @@ local modal_rule
 local portal_rule
 local rounding_rule
 local floating_rounding_rule
+local no_shadow_rule
 for _, rule in ipairs(rules) do
   if rule.name == "opendwm-xwayland-modal-dialogs" then modal_rule = rule end
   if rule.name == "opendwm-gtk-portal-file-chooser" then portal_rule = rule end
   if rule.name == "opendwm-tiled-rounding" then rounding_rule = rule end
   if rule.name == "opendwm-floating-rounding" then floating_rounding_rule = rule end
+  if rule.name == "opendwm-monocle-no-shadow" then no_shadow_rule = rule end
 end
 assert(modal_rule.match.xwayland == true and modal_rule.match.modal == true)
 assert(modal_rule.float == true and modal_rule.center == true)
@@ -83,6 +85,8 @@ assert(rounding_rule.match.float == false and rounding_rule.match.fullscreen == 
 assert(rounding_rule.rounding == 4)
 assert(floating_rounding_rule.match.float == true and floating_rounding_rule.match.fullscreen == false)
 assert(floating_rounding_rule.rounding == 4)
+assert(no_shadow_rule.match.float == false and no_shadow_rule.match.fullscreen == false)
+assert(no_shadow_rule.no_shadow == true)
 local keybinds_binding = false
 for _, keys in ipairs(binds) do
   if keys == "SUPER + slash" then keybinds_binding = true end
@@ -91,8 +95,9 @@ assert(keybinds_binding)
 configs = {}
 opendwm_set_layout("monocle")
 assert(refreshes == 1)
-assert(rule_states[#rule_states - 1] == true)
-assert(rule_states[#rule_states] == false)
+assert(rule_states[#rule_states - 2] == true)
+assert(rule_states[#rule_states - 1] == false)
+assert(rule_states[#rule_states] == true)
 assert(configs[#configs].general.layout == "monocle")
 assert(configs[#configs].general.gaps_in == 0)
 assert(configs[#configs].general.gaps_out == 0)
@@ -101,8 +106,9 @@ opendwm_adjust_gaps(2)
 assert(#configs == count)
 opendwm_set_layout("master")
 assert(refreshes == 2)
-assert(rule_states[#rule_states - 1] == false)
-assert(rule_states[#rule_states] == true)
+assert(rule_states[#rule_states - 2] == false)
+assert(rule_states[#rule_states - 1] == true)
+assert(rule_states[#rule_states] == false)
 assert(configs[#configs].general.layout == "master")
 assert(configs[#configs].general.gaps_in == 10)
 opendwm_adjust_gaps(2)

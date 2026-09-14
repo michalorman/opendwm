@@ -38,6 +38,7 @@ hl.on("hyprland.start", function()
     hl.exec_cmd("python3 " .. script("start-bar"))
     hl.exec_cmd("change-wallpaper --restore")
     hl.exec_cmd("mako")
+    hl.exec_cmd("hypridle")
     hl.exec_cmd("udiskie")
 end)
 
@@ -97,7 +98,14 @@ hl.config({
     decoration = {
         rounding = 0,
         blur  = { enabled = false },
-        shadow = { enabled = false },
+        shadow = {
+            enabled      = true,
+            range        = 20,
+            render_power = 3,
+            offset       = { 0, 4 },
+            scale        = 0.98,
+            color        = "rgba(1a1b26cc)",
+        },
     },
 
     animations = {
@@ -224,11 +232,24 @@ local tiled_rounding = hl.window_rule({
 })
 tiled_rounding:set_enabled(true)
 
+-- Monocle stays shadowless; the subtle global shadow applies to tiled and
+-- floating windows in every other layout.
+local monocle_no_shadow = hl.window_rule({
+    name = "opendwm-monocle-no-shadow",
+    match = {
+        float = false,
+        fullscreen = false,
+    },
+    no_shadow = true,
+})
+monocle_no_shadow:set_enabled(false)
+
 function opendwm_set_layout(layout)
     if layout == "monocle" then
         monocle_active = true
         monocle_border:set_enabled(true)
         tiled_rounding:set_enabled(false)
+        monocle_no_shadow:set_enabled(true)
         hl.config({
             general = {
                 layout = "monocle",
@@ -240,6 +261,7 @@ function opendwm_set_layout(layout)
         monocle_active = false
         monocle_border:set_enabled(false)
         tiled_rounding:set_enabled(true)
+        monocle_no_shadow:set_enabled(false)
         hl.config({
             general = {
                 layout = "master",
