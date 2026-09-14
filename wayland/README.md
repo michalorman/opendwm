@@ -53,6 +53,10 @@ Existing helper commands (`record-menu`, `voxtype`, `dictation`,
 written for X11. Screen capture helpers in particular need PipeWire/portal
 support (e.g. `grim`/`slurp`, `wf-recorder`).
 
+`scripts/keybinds-menu` is an included, searchable keybinding reference and
+command palette. It requires the themed `bemenu-menu` wrapper on `PATH` and
+opens with `Super+/`.
+
 ## Setup
 
 The installer detects and reports missing packages (it never installs

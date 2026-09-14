@@ -37,7 +37,7 @@ hl.monitor({
 hl.on("hyprland.start", function()
     hl.exec_cmd("python3 " .. script("start-bar"))
     hl.exec_cmd("change-wallpaper --restore")
-    hl.exec_cmd("dunst")
+    hl.exec_cmd("mako")
     hl.exec_cmd("udiskie")
 end)
 
@@ -148,6 +148,15 @@ hl.window_rule({
     size   = "(monitor_w*0.65) (monitor_h*0.60)",
 })
 
+-- Wallpaper picker (change-wallpaper tags its swayimg with this app_id).
+hl.window_rule({
+    name  = "opendwm-wallpaper-picker",
+    match = { class = [[^(opendwm\.wallpaper-picker)$]] },
+    float  = true,
+    center = true,
+    size   = "(monitor_w*0.70) (monitor_h*0.70)",
+})
+
 -- Floating rules from x11/config.h
 hl.window_rule({
   name  = "opendwm-float-1password",
@@ -186,7 +195,7 @@ hl.window_rule({
         float = true,
         fullscreen = false,
     },
-    rounding = 8,
+    rounding = 4,
 })
 
 -- Layout policy. Monocle is gapless and borderless for tiled windows only;
@@ -211,7 +220,7 @@ local tiled_rounding = hl.window_rule({
         float = false,
         fullscreen = false,
     },
-    rounding = 8,
+    rounding = 4,
 })
 tiled_rounding:set_enabled(true)
 
@@ -321,8 +330,10 @@ hl.bind(mod .. " + SHIFT + p", hl.dsp.exec_cmd(script("launch-normal") .. " " ..
 hl.bind(mod .. " + r",        hl.dsp.exec_cmd(script("launch-normal") .. " record-menu"))
 hl.bind(mod .. " + SHIFT + r", hl.dsp.exec_cmd(script("launch-normal") .. " record-menu stop"))
 hl.bind(mod .. " + s",        hl.dsp.exec_cmd(script("launch-normal") .. " sshot-menu"))
+hl.bind(mod .. " + w",        hl.dsp.exec_cmd(script("launch-normal") .. " change-wallpaper"))
 hl.bind(mod .. " + x",        hl.dsp.exec_cmd(script("launch-normal") .. " power-menu"))
 hl.bind(mod .. " + n",        hl.dsp.exec_cmd(script("launch-normal") .. " notes-menu"))
+hl.bind(mod .. " + slash",    hl.dsp.exec_cmd(script("launch-normal") .. " " .. script("keybinds-menu")))
 hl.bind("ALT + l",            hl.dsp.exec_cmd(script("launch-normal") .. " links-menu"))
 hl.bind(mod .. " + CTRL + p", hl.dsp.exec_cmd(script("launch-normal") .. " 1password"))
 

@@ -435,8 +435,8 @@ Scope {
 
             Rectangle {
               anchors.centerIn: parent
-              width: parent.width - 6
-              height: parent.height - 6
+              width: parent.width - 4
+              height: parent.height - 4
               color: active ? root.colAccent : "transparent"
               radius: 3
             }

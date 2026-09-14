@@ -311,6 +311,31 @@ class ScriptsTest(unittest.TestCase):
             out = subprocess.check_output(["lua", "-e", script])
             self.assertEqual(out.decode(), "'ghostty' '--title=a b'|1")
 
+    def install_bemenu_mock(self, selection):
+        menu = self.root / "bemenu-menu"
+        menu.write_text("#!/bin/sh\ncat > \"$MENU_INPUT\"\nprintf '%s\\n' \"$MENU_SELECTION\"\n")
+        menu.chmod(0o755)
+        self.env["MENU_INPUT"] = str(self.root / "menu-input")
+        self.env["MENU_SELECTION"] = selection
+
+    def test_keybinds_menu_lists_and_executes_selection(self):
+        selection = f"{'SUPER + w':<26} ->  Change wallpaper"
+        self.install_bemenu_mock(selection)
+        self.configure()
+        self.run_script("keybinds-menu")
+        entries = (self.root / "menu-input").read_text().splitlines()
+        self.assertIn(selection, entries)
+        self.assertIn(f"{'SUPER + /':<26} ->  Show keybindings", entries)
+        evals = [call[1] for call in self.calls() if call[0] == "eval"]
+        self.assertEqual(len(evals), 1)
+        self.assertIn("change-wallpaper", evals[0])
+
+    def test_keybinds_menu_cancels_without_action(self):
+        self.install_bemenu_mock("")
+        self.configure()
+        self.run_script("keybinds-menu")
+        self.assertEqual(self.calls(), [])
+
     def test_move_validation_and_response(self):
         for args in ((), ("0",), ("1;exec",), ("1", "2"), ("999999999999",)):
             self.configure()

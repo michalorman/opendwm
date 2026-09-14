@@ -1,0 +1,78 @@
+#!/bin/bash
+# keybinds-menu: searchable Wayland keybinding reference and command palette.
+set -eu
+
+script_dir=$(cd -- "$(dirname -- "$0")" && pwd)
+
+quote() {
+  printf "'%s'" "${1//\'/\'\\\'\'}"
+}
+
+normal=$(quote "$script_dir/launch-normal")
+scripts=$(quote "$script_dir")
+keys=()
+descriptions=()
+commands=()
+
+add() {
+  keys+=("$1")
+  descriptions+=("$2")
+  commands+=("${3:-}")
+}
+
+add "SUPER + 1-0" "Focus workspace 1-10"
+add "SUPER + SHIFT + 1-0" "Move window to workspace 1-10"
+add "SUPER + j" "Focus next tiled window" "hyprctl dispatch cyclenext tiled"
+add "SUPER + k" "Focus previous tiled window" "hyprctl dispatch cyclenext prev tiled"
+add "SUPER + SHIFT + j" "Move window forward in stack" "hyprctl dispatch swapnext"
+add "SUPER + SHIFT + k" "Move window backward in stack" "hyprctl dispatch swapnext prev"
+add "SUPER + Return" "Open terminal" "$normal ghostty"
+add "SUPER + SHIFT + Return" "Promote window to master" "hyprctl dispatch layoutmsg swapwithmaster"
+add "SUPER + c" "Close active window" "hyprctl dispatch killactive"
+add "SUPER + SHIFT + q" "Quit Hyprland" "hyprctl dispatch exit"
+add "SUPER + t" "Use tiling layout" "hyprctl eval 'opendwm_set_layout(\"master\")'"
+add "SUPER + m" "Use monocle layout" "hyprctl eval 'opendwm_set_layout(\"monocle\")'"
+add "SUPER + b" "Toggle bar" "$(quote "$script_dir/toggle-bar")"
+add "SUPER + h" "Decrease master width" "hyprctl dispatch resizeactive -40 0"
+add "SUPER + l" "Increase master width" "hyprctl dispatch resizeactive 40 0"
+add "SUPER + -" "Decrease gaps" "$(quote "$script_dir/adjust-gaps") -2"
+add "SUPER + =" "Increase gaps" "$(quote "$script_dir/adjust-gaps") 2"
+add "SUPER + SHIFT + u" "Toggle cliamp scratchpad" "$scripts/scratchpad cliamp opendwm.cliamp ghostty --class=opendwm.cliamp --window-width=120 --window-height=35 -e cliamp"
+add "SUPER + SHIFT + i" "Toggle terminal scratchpad" "$scripts/scratchpad scratch-terminal opendwm.scratch-terminal ghostty --class=opendwm.scratch-terminal --window-width=120 --window-height=35"
+add "SUPER + CTRL + b" "Open browser" "$normal helium-browser"
+add "SUPER + p" "Application launcher" "$normal $scripts/launcher drun"
+add "SUPER + SHIFT + p" "Command launcher" "$normal $scripts/launcher run"
+add "SUPER + r" "Recording menu" "$normal record-menu"
+add "SUPER + SHIFT + r" "Stop recording" "$normal record-menu stop"
+add "SUPER + s" "Screenshot menu" "$normal sshot-menu"
+add "SUPER + w" "Change wallpaper" "$normal change-wallpaper"
+add "SUPER + x" "Power menu" "$normal power-menu"
+add "SUPER + n" "Notes menu" "$normal notes-menu"
+add "ALT + l" "Links menu" "$normal links-menu"
+add "SUPER + CTRL + p" "Open 1Password" "$normal 1password"
+add "SUPER + /" "Show keybindings"
+add "Volume Up" "Increase volume" "wpctl set-volume --limit 1.0 @DEFAULT_AUDIO_SINK@ 5%+"
+add "Volume Down" "Decrease volume" "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-"
+add "Mute" "Toggle volume mute" "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
+add "Media Play" "Play or pause" "playerctl play-pause"
+add "Media Next" "Next track" "playerctl next"
+add "Media Previous" "Previous track" "playerctl previous"
+add "F9 (hold)" "Dictation while held"
+add "SUPER + Left Drag" "Move floating window"
+add "SUPER + Right Drag" "Resize floating window"
+
+lines=()
+for i in "${!keys[@]}"; do
+  lines+=("$(printf '%-26s ->  %s' "${keys[i]}" "${descriptions[i]}")")
+done
+
+selected=$(printf '%s\n' "${lines[@]}" |
+  bemenu-menu --width-factor 0.3 --prompt '')
+[ -n "$selected" ] || exit 0
+
+for i in "${!lines[@]}"; do
+  if [ "$selected" = "${lines[i]}" ]; then
+    [ -z "${commands[i]}" ] || sh -c "${commands[i]}"
+    exit 0
+  fi
+done

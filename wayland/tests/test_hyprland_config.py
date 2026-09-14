@@ -12,7 +12,7 @@ CONFIG = Path(__file__).resolve().parents[1] / "hyprland/hyprland.lua"
 class HyprlandConfigTests(unittest.TestCase):
     def test_monocle_policy_and_capslock_mapping(self):
         script = r'''
-local configs, rule_states, animations, refreshes, rules = {}, {}, {}, 0, {}
+local configs, rule_states, animations, refreshes, rules, binds = {}, {}, {}, 0, {}, {}
 local function dispatcher() return {} end
 hl = {
   monitor = function(_) end,
@@ -26,7 +26,7 @@ hl = {
     table.insert(rules, value)
     return {set_enabled = function(_, enabled) table.insert(rule_states, enabled) end}
   end,
-  bind = function(...) end,
+  bind = function(keys, _) table.insert(binds, keys) end,
   dsp = {
     focus = dispatcher,
     exec_cmd = dispatcher,
@@ -80,9 +80,14 @@ assert(portal_rule.match.class == "^xdg-desktop-portal-gtk$")
 assert(portal_rule.float == true and portal_rule.center == true)
 assert(portal_rule.size == "(monitor_w*0.60) (monitor_h*0.60)")
 assert(rounding_rule.match.float == false and rounding_rule.match.fullscreen == false)
-assert(rounding_rule.rounding == 8)
+assert(rounding_rule.rounding == 4)
 assert(floating_rounding_rule.match.float == true and floating_rounding_rule.match.fullscreen == false)
-assert(floating_rounding_rule.rounding == 8)
+assert(floating_rounding_rule.rounding == 4)
+local keybinds_binding = false
+for _, keys in ipairs(binds) do
+  if keys == "SUPER + slash" then keybinds_binding = true end
+end
+assert(keybinds_binding)
 configs = {}
 opendwm_set_layout("monocle")
 assert(refreshes == 1)
