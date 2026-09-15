@@ -36,6 +36,7 @@ hl.monitor({
 
 hl.on("hyprland.start", function()
     hl.exec_cmd("python3 " .. script("start-bar"))
+    hl.exec_cmd("awww-daemon")
     hl.exec_cmd("change-wallpaper --restore")
     hl.exec_cmd("mako")
     hl.exec_cmd("hypridle")
@@ -72,7 +73,7 @@ hl.config({
     general = {
         gaps_in    = 10, -- gappx
         gaps_out   = 10,
-        border_size = 2, -- borderpx
+        border_size = 1, -- borderpx
         -- Show directional resize cursors near window borders. This also
         -- permits unmodified border dragging; Super+RMB remains available.
         resize_on_border = true,
@@ -97,14 +98,21 @@ hl.config({
 
     decoration = {
         rounding = 0,
-        blur  = { enabled = false },
+        blur  = {
+            enabled = true,
+            size = 4,
+            passes = 2,
+            ignore_opacity = true,
+            new_optimizations = true,
+            vibrancy = 0.2,
+        },
         shadow = {
             enabled      = true,
-            range        = 20,
+            range        = 26,
             render_power = 3,
             offset       = { 0, 4 },
             scale        = 0.98,
-            color        = "rgba(1a1b26cc)",
+            color        = "rgba(1a1b26e6)",
         },
     },
 
@@ -119,7 +127,8 @@ hl.config({
 })
 
 -- Restrained window lifecycle animation: only opening and closing windows
--- fade and scale. Workspace switches, tiling geometry, borders, and layers
+-- fade and scale, workspace switches slide-fade, and scratchpads slide-fade
+-- vertically from the bottom edge. Tiling geometry, borders, and layers
 -- remain instant.
 hl.curve("opendwm-window", {
     type = "bezier",
@@ -133,7 +142,8 @@ hl.animation({ leaf = "fadeIn",     enabled = true,  speed = 4, bezier = "opendw
 hl.animation({ leaf = "fadeOut",    enabled = true,  speed = 4, bezier = "opendwm-window" })
 hl.animation({ leaf = "border",     enabled = false })
 hl.animation({ leaf = "layers",     enabled = false })
-hl.animation({ leaf = "workspaces", enabled = false })
+hl.animation({ leaf = "workspaces", enabled = true, speed = 4, bezier = "opendwm-window", style = "slidefade" })
+hl.animation({ leaf = "specialWorkspace", enabled = true, speed = 4, bezier = "opendwm-window", style = "slidefadevert" })
 
 -------------
 ---- RULES ---
@@ -154,15 +164,6 @@ hl.window_rule({
     float  = true,
     center = true,
     size   = "(monitor_w*0.65) (monitor_h*0.60)",
-})
-
--- Wallpaper picker (change-wallpaper tags its swayimg with this app_id).
-hl.window_rule({
-    name  = "opendwm-wallpaper-picker",
-    match = { class = [[^(opendwm\.wallpaper-picker)$]] },
-    float  = true,
-    center = true,
-    size   = "(monitor_w*0.70) (monitor_h*0.70)",
 })
 
 -- Floating rules from x11/config.h
@@ -198,12 +199,12 @@ hl.window_rule({
 -- Floating windows keep rounded corners in every layout, including
 -- scratchpads and portal dialogs. Fullscreen windows stay square.
 hl.window_rule({
-    name = "opendwm-floating-rounding",
+    name  = "opendwm-floating-rounding",
     match = {
         float = true,
         fullscreen = false,
     },
-    rounding = 4,
+    rounding = 6,
 })
 
 -- Layout policy. Monocle is gapless and borderless for tiled windows only;
@@ -228,7 +229,7 @@ local tiled_rounding = hl.window_rule({
         float = false,
         fullscreen = false,
     },
-    rounding = 4,
+    rounding = 6,
 })
 tiled_rounding:set_enabled(true)
 
@@ -298,9 +299,9 @@ end
 
 local mod = "SUPER"
 
--- Workspaces 1-9, 0 (0 = workspace 10), like dwm tags.
+-- Workspaces 1-5, like dwm tags.
 -- Move window to workspace and follow (tag + view).
-for i = 1, 10 do
+for i = 1, 5 do
     local key = i % 10
     hl.bind(mod .. " + " .. key, hl.dsp.focus({ workspace = i }))
     hl.bind(mod .. " + SHIFT + " .. key,
@@ -310,6 +311,12 @@ end
 -- Focus cycling (tiled only; in monocle this cycles the monocle stack)
 hl.bind(mod .. " + j", hl.dsp.window.cycle_next({ next = true, tiled = true }))
 hl.bind(mod .. " + k", hl.dsp.window.cycle_next({ next = false, tiled = true }))
+
+-- Workspace cycling (wraps 5 -> 1 and 1 -> 5)
+hl.bind(mod .. " + h",     hl.dsp.focus({ workspace = "r-1" }))
+hl.bind(mod .. " + l",     hl.dsp.focus({ workspace = "r+1" }))
+hl.bind(mod .. " + left",  hl.dsp.focus({ workspace = "r-1" }))
+hl.bind(mod .. " + right", hl.dsp.focus({ workspace = "r+1" }))
 
 -- Stack movement
 hl.bind(mod .. " + SHIFT + j", hl.dsp.window.swap({ next = true }))
@@ -329,8 +336,8 @@ hl.bind(mod .. " + m", function() opendwm_set_layout("monocle") end)
 hl.bind(mod .. " + b", hl.dsp.exec_cmd(script("toggle-bar")))
 
 -- Master factor (approximation of incmfact: resize in 40px steps)
-hl.bind(mod .. " + h", hl.dsp.window.resize({ x = -40, y = 0, relative = true }))
-hl.bind(mod .. " + l", hl.dsp.window.resize({ x = 40, y = 0, relative = true }))
+hl.bind(mod .. " + SHIFT + h", hl.dsp.window.resize({ x = -40, y = 0, relative = true }))
+hl.bind(mod .. " + SHIFT + l", hl.dsp.window.resize({ x = 40, y = 0, relative = true }))
 
 -- Gaps (incgaps +-2, clamped to 0-50 like maxgaps)
 hl.bind(mod .. " + minus",           hl.dsp.exec_cmd(script("adjust-gaps") .. " -2"))
@@ -352,7 +359,7 @@ hl.bind(mod .. " + SHIFT + p", hl.dsp.exec_cmd(script("launch-normal") .. " " ..
 hl.bind(mod .. " + r",        hl.dsp.exec_cmd(script("launch-normal") .. " record-menu"))
 hl.bind(mod .. " + SHIFT + r", hl.dsp.exec_cmd(script("launch-normal") .. " record-menu stop"))
 hl.bind(mod .. " + s",        hl.dsp.exec_cmd(script("launch-normal") .. " sshot-menu"))
-hl.bind(mod .. " + w",        hl.dsp.exec_cmd(script("launch-normal") .. " change-wallpaper"))
+hl.bind(mod .. " + w",        hl.dsp.exec_cmd("quickshell --path " .. shq(OPENDWM .. "/../quickshell/yawc.qml")))
 hl.bind(mod .. " + x",        hl.dsp.exec_cmd(script("launch-normal") .. " power-menu"))
 hl.bind(mod .. " + n",        hl.dsp.exec_cmd(script("launch-normal") .. " notes-menu"))
 hl.bind(mod .. " + slash",    hl.dsp.exec_cmd(script("launch-normal") .. " " .. script("keybinds-menu")))

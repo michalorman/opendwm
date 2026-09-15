@@ -63,7 +63,9 @@ assert(by_leaf.windows.enabled == false)
 assert(by_leaf.windowsIn.enabled == true and by_leaf.windowsIn.style == "popin 95%")
 assert(by_leaf.windowsOut.enabled == true and by_leaf.windowsOut.style == "popin 95%")
 assert(by_leaf.fadeIn.enabled == true and by_leaf.fadeOut.enabled == true)
-assert(by_leaf.workspaces.enabled == false and by_leaf.layers.enabled == false)
+assert(by_leaf.workspaces.enabled == true and by_leaf.workspaces.style == "slidefade")
+assert(by_leaf.specialWorkspace.enabled == true and by_leaf.specialWorkspace.style == "slidefadevert")
+assert(by_leaf.layers.enabled == false)
 local modal_rule
 local portal_rule
 local rounding_rule
@@ -82,9 +84,9 @@ assert(portal_rule.match.class == "^xdg-desktop-portal-gtk$")
 assert(portal_rule.float == true and portal_rule.center == true)
 assert(portal_rule.size == "(monitor_w*0.60) (monitor_h*0.60)")
 assert(rounding_rule.match.float == false and rounding_rule.match.fullscreen == false)
-assert(rounding_rule.rounding == 4)
+assert(rounding_rule.rounding == 6)
 assert(floating_rounding_rule.match.float == true and floating_rounding_rule.match.fullscreen == false)
-assert(floating_rounding_rule.rounding == 4)
+assert(floating_rounding_rule.rounding == 6)
 assert(no_shadow_rule.match.float == false and no_shadow_rule.match.fullscreen == false)
 assert(no_shadow_rule.no_shadow == true)
 local keybinds_binding = false

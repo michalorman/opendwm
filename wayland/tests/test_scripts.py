@@ -319,16 +319,19 @@ class ScriptsTest(unittest.TestCase):
         self.env["MENU_SELECTION"] = selection
 
     def test_keybinds_menu_lists_and_executes_selection(self):
-        selection = f"{'SUPER + w':<26} ->  Change wallpaper"
+        selection = f"{'SUPER + w':<26} ->  Wallpaper picker"
         self.install_bemenu_mock(selection)
+        quickshell_mock = self.root / "quickshell"
+        quickshell_mock.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$QS_ARGS\"\n")
+        quickshell_mock.chmod(0o755)
+        self.env["QS_ARGS"] = str(self.root / "qs-args")
         self.configure()
         self.run_script("keybinds-menu")
         entries = (self.root / "menu-input").read_text().splitlines()
         self.assertIn(selection, entries)
         self.assertIn(f"{'SUPER + /':<26} ->  Show keybindings", entries)
-        evals = [call[1] for call in self.calls() if call[0] == "eval"]
-        self.assertEqual(len(evals), 1)
-        self.assertIn("change-wallpaper", evals[0])
+        self.assertIn("yawc.qml", (self.root / "qs-args").read_text())
+        self.assertEqual(self.calls(), [])
 
     def test_keybinds_menu_cancels_without_action(self):
         self.install_bemenu_mock("")

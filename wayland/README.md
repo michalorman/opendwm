@@ -57,6 +57,14 @@ support (e.g. `grim`/`slurp`, `wf-recorder`).
 command palette. It requires the themed `bemenu-menu` wrapper on `PATH` and
 opens with `Super+/`.
 
+`quickshell/yawc.qml` is a vendored copy of the yawc wallpaper carousel,
+themed to match the bar and hardcoded to `~/Wallpapers`. `Super+w` opens it
+as a one-shot Quickshell instance; a selection applies through
+`change-wallpaper` (awww with a radial grow transition) and is restored on
+login. Thumbnail caching uses `python-pillow` if installed.
+The carousel waits for visible previews before fading in; unreadable images
+show an error placeholder. Qt owns selection centering and scroll animation.
+
 ## Setup
 
 The installer detects and reports missing packages (it never installs
@@ -129,7 +137,7 @@ entries — in `wayland/hyprland/hyprland.lua`. Avoid stacking additional
 
 | opendwm (X11)                  | Wayland port                                             |
 |--------------------------------|----------------------------------------------------------|
-| Tags 1-9, 0                    | Workspaces 1-9, 10 (shown as `0`)                        |
+| Tags 1-5                       | Workspaces 1-5                                           |
 | `Mod+Shift+n` tag + follow     | `movetoworkspace` (switches + focuses by default)        |
 | Master/stack tiling            | `master` layout, `mfact = 0.60`, orientation left        |
 | Monocle                        | `opendwm_set_layout`: gapless, borderless tiled windows  |
@@ -202,6 +210,8 @@ These tests do not replace live Quickshell loading or compositor testing.
 Node.js enables the optional QML JavaScript logic test. The QML file also
 passes the local `qmlformat` parser, including the typed string returns
 used by the IPC acknowledgement protocol.
+Qt 6 `qmltestrunner` enables the offscreen yawc layout test, which exercises
+the actual carousel, selection geometry, startup readiness, and image failures.
 
 Early iteration can run nested:
 
@@ -211,7 +221,7 @@ start-opendwm-wayland
 
 Acceptance checklist (from the migration plan):
 
-- Workspaces: empty, single-window, crowded; `0` maps to workspace 10.
+- Workspaces: empty, single-window, crowded.
 - Master/monocle switch (`Mod+t`/`Mod+m`); the bar background is transparent
   in tiling and opaque in monocle.
 - In monocle, tiled windows have no border or gaps; floating scratchpads

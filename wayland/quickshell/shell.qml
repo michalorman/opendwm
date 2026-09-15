@@ -412,7 +412,7 @@ Scope {
       // fullscreen window (dwm behavior, per output)
       visible: root.barsVisible && !root.hasActualFullscreen(hlMonitor)
 
-      // Left: workspaces 1-9, 0
+      // Left: workspaces 1-5
       Row {
         id: leftBlock
         anchors.left: parent.left
@@ -421,7 +421,7 @@ Scope {
         spacing: 0
 
         Repeater {
-          model: 10
+          model: 5
 
           Rectangle {
             property int wsId: index + 1
@@ -435,13 +435,16 @@ Scope {
 
             Rectangle {
               anchors.centerIn: parent
-              width: active ? 18 : 8
-              height: 8
-              radius: 4
+              width: active ? 14 : 8
+              height: active ? 10 : 8
+              radius: height / 2
               color: active ? root.colAccent
                 : wsOccupied ? root.colFg : root.colDim
 
               Behavior on width {
+                NumberAnimation { duration: 220; easing.type: Easing.InOutQuad }
+              }
+              Behavior on height {
                 NumberAnimation { duration: 220; easing.type: Easing.InOutQuad }
               }
               Behavior on color {

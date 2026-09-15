@@ -10,6 +10,8 @@ import unittest
 
 
 WAYLAND = Path(__file__).resolve().parents[1]
+QMLTESTRUNNER = shutil.which("qmltestrunner6") or (
+    "/usr/lib/qt6/bin/qmltestrunner" if Path("/usr/lib/qt6/bin/qmltestrunner").exists() else None)
 
 
 class IntegrationTests(unittest.TestCase):
@@ -98,6 +100,93 @@ class IntegrationTests(unittest.TestCase):
                 env=env, capture_output=True, text=True,
             )
             self.assertNotEqual(result.returncode, 0)
+
+    @unittest.skipUnless(QMLTESTRUNNER, "Qt 6 Quick Test required")
+    def test_yawc_layout_and_startup(self):
+        qml = (WAYLAND / "quickshell/yawc.qml").read_text()
+        # Exercise the actual functions, timers, ListView and image delegates
+        # in Qt, without starting Quickshell or changing the desktop wallpaper.
+        state = qml[qml.index('    property string wallpaperDir:'):
+                    qml.index('    readonly property string cacheDir:')]
+        view = qml[qml.index('        ListView {'):
+                   qml.index('\n        Text {', qml.index('        ListView {'))]
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            image = folder / "wallpaper.svg"
+            image.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="160" '
+                             'height="100"><rect width="160" height="100" fill="blue"/></svg>')
+            state = state.replace('Quickshell.env("HOME")', json.dumps(directory))
+            harness = ('import QtQuick\nimport QtTest\nItem {\n'
+                       'id: root; width: 1200; height: 800\n'
+                       'property var thumbMap: ({})\n'
+                       + state + '\nItem { id: mainScope; anchors.fill: parent\n'
+                       + view + '\n}\nTestCase {\n'
+                       'name: "YawcLayout"; when: windowShown\n'
+                       'function initTestCase() {\n'
+                       f'  for (let i = 0; i < 23; ++i) wallpaperModel.append({{path: {json.dumps(str(image))}}})\n'
+                       '  compare(carousel.count, 0)\n'
+                       '  root.scanFinished = true\n'
+                       '  root.beginEntry()\n'
+                       '  tryCompare(root, "entryReady", true, 10000)\n'
+                       '}\n' + r'''
+function centered() {
+    const card = carousel.currentItem
+    return card && card.isCurrent && card.width === root.focusWidth
+        && Math.abs(card.mapToItem(carousel, card.width / 2, 0).x - carousel.width / 2) < 1
+}
+function test_startup_and_navigation() {
+    tryVerify(centered, 3000)
+    compare(carousel.interactive, false)
+    compare(carousel.highlightMoveDuration, 220)
+    verify(carousel.currentItem.contentReady)
+    tryCompare(root, "previewReady", true, 3000)
+    verify(carousel.currentItem.loadFullRes)
+    verify(!carousel.itemAtIndex(carousel.currentIndex + 1).loadFullRes)
+    for (const delta of [1, 1, -1, -1, 7, -7]) {
+        root.navigateTo(carousel.currentIndex + delta)
+        compare(root.previewReady, false)
+        tryVerify(centered, 3000)
+    }
+    for (let i = 0; i < 10; ++i) root.navigateTo(carousel.currentIndex + 1)
+    tryVerify(centered, 3000)
+    const chosen = carousel.currentIndex
+    root.beginEntry()
+    wait(600)
+    compare(carousel.currentIndex, chosen)
+    verify(centered())
+}
+function test_failed_thumbnail_falls_back_to_full_image() {
+    const path = carousel.currentItem.itemPath
+    const map = {}; map[path] = path + ".missing"
+    root.thumbMap = map
+    wait(200)
+    tryVerify(() => carousel.currentItem.contentReady, 5000)
+    verify(centered())
+    root.thumbMap = ({})
+}
+function test_unreadable_images_do_not_stall_startup() {
+    root.entryReady = false
+    root.previewReady = false
+    root.viewInitialized = false
+    root.scanFinished = false
+    wait(0)
+    wallpaperModel.clear()
+    wallpaperModel.append({path: "/nonexistent/opendwm-wallpaper.png"})
+    root.scanFinished = true
+    root.beginEntry()
+    tryCompare(root, "entryReady", true, 5000)
+    tryVerify(centered, 3000)
+    verify(carousel.currentItem.imageFailed)
+    verify(!carousel.currentItem.contentReady)
+}
+} }
+''')
+            (folder / "tst_yawc.qml").write_text(harness)
+            result = subprocess.run(
+                [QMLTESTRUNNER, "-input", directory, "-platform", "offscreen", "-o", "-,txt"],
+                env=dict(os.environ, QT_QUICK_BACKEND="software", QT_FORCE_STDERR_LOGGING="1"),
+                capture_output=True, text=True, timeout=40)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js required to exercise QML JavaScript")
     def test_fullscreen_modes_and_monitor_recovery(self):
